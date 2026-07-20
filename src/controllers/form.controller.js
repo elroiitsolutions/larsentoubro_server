@@ -58,23 +58,26 @@ export const createForm = async (req, res, next) => {
   try {
     const { name, slug, description, fields } = req.body;
     
-    let version = 1;
-    const existingForm = await FormDefinition.findOne({ slug });
-    if (existingForm) {
-      version = existingForm.version + 1;
-      await FormDefinition.updateMany({ slug }, { isActive: false });
+    let form = await FormDefinition.findOne({ slug });
+    if (form) {
+      form.name = name;
+      form.description = description;
+      form.fields = fields;
+      form.version = (form.version || 1) + 1;
+      form.isActive = true;
+      await form.save();
+    } else {
+      form = new FormDefinition({
+        name,
+        slug,
+        description,
+        fields,
+        version: 1,
+        isActive: true,
+      });
+      await form.save();
     }
 
-    const form = new FormDefinition({
-      name,
-      slug,
-      description,
-      fields,
-      version,
-      isActive: true,
-    });
-
-    await form.save();
     res.status(201).json({ success: true, data: form });
   } catch (error) {
     next(error);
