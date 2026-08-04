@@ -25,16 +25,29 @@ const userSchema = new mongoose.Schema({
     },
     role: {
         type: String,
-        required: true,
-        enum: ['Admin', 'Manager', 'Engineer', 'Analyst', 'Viewer'],
-        default: 'Viewer'
+        enum: ['Admin', 'User', 'Vendor'],
+        default: 'User'
     },
     user_id: {
         type: String,
         required: true,
         unique: true,
         trim: true
-    }
+    },
+    allowedPages: {
+        type: [String],
+        default: ["/dashboard", "/projects", "/stores"]
+    },
+    projects: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Project',
+        default: []
+    }],
+    stores: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Store',
+        default: []
+    }]
 }, { timestamps: true });
 
 // Pre-save hook to hash password
