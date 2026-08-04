@@ -1,8 +1,11 @@
 import express from 'express';
-import { getStoreTools } from '../controllers/tool.controller.js';
+import { getToolById, updateToolById, deleteToolById } from '../controllers/tool.controller.js';
 
 const router = express.Router();
 
-router.get('/:storeId/tools', getStoreTools);
+// Top-level Tool Resource Endpoints (/api/tools/:toolId)
+router.get('/:toolId', getToolById);
+router.put('/:toolId', updateToolById);
+router.delete('/:toolId', deleteToolById);
 
 export default router;

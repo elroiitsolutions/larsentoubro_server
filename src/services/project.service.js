@@ -8,8 +8,8 @@ const createProject = async (projectData) => {
     return project;
 };
 
-const getProjects = async () => {
-    return await Project.find().sort({ createdAt: -1 });
+const getProjects = async (filter = {}) => {
+    return await Project.find(filter).sort({ createdAt: -1 });
 };
 
 const getProjectById = async (id) => {
