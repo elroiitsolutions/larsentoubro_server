@@ -4,16 +4,16 @@ import ToolIdGenerator from '../utils/tool-id.js';
 const toolSchema = new mongoose.Schema({
     description: { type: String, required: true },
     toolCode: { type: String, trim: true },
-    makeYear: { type: String, required: true },
-    capacity: { type: String, required: true },
-    safeWorkingLoad: { type: String, required: true },
-    toolType: { type: String, required: true },
-    metalType: { type: String, required: true },
-    toolVariant: { type: String, required: true },
-    purchaserName: { type: String, required: true },
+    makeYear: { type: String },
+    capacity: { type: String },
+    safeWorkingLoad: { type: String },
+    toolType: { type: String },
+    metalType: { type: String },
+    toolVariant: { type: String },
+    purchaserName: { type: String },
     purchaserContact: { type: String },
     supplierCode: { type: String },
-    dateOfSupply: { type: String, required: true },
+    dateOfSupply: { type: String },
     validityPeriod: { type: String, default: 'N/A' },
     testCertificate: { type: String },
     project: { type: mongoose.Schema.Types.ObjectId, ref: 'Project', required: true },
@@ -26,7 +26,8 @@ const toolSchema = new mongoose.Schema({
     remarks: { type: String },
     toolId: { type: String, unique: true },
     qrLink: { type: String },
-    status: { type: String, default: 'Available' }
+    status: { type: String, default: 'Available' },
+    customFields: { type: Map, of: mongoose.Schema.Types.Mixed, default: {} }
 }, {
     timestamps: true
 });

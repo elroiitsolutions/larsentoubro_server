@@ -4,15 +4,18 @@ import { Project } from '../models/project.model.js';
 import { Store } from '../models/store.model.js';
 import ToolIdGenerator from '../utils/tool-id.js';
 import { 
-    TOOL_IMPORT_COLUMNS, 
+    buildDynamicImportColumns,
     isInstructionRow, 
     getColumnValue, 
-    generateSampleExcelWorkbook 
+    generateDynamicSampleExcelWorkbook 
 } from '../config/tool-import-template.js';
+import { FormDefinition } from '../models/formDefinition.model.js';
 
 const downloadStoreToolsSample = async (req, res, next) => {
     try {
-        const buffer = generateSampleExcelWorkbook();
+        const form = await FormDefinition.findOne({ slug: 'tool-form', isActive: true });
+        const formFields = form ? form.fields : [];
+        const buffer = generateDynamicSampleExcelWorkbook(formFields);
         res.setHeader('Content-Disposition', 'attachment; filename="tools_import_sample.xlsx"');
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         res.send(buffer);
@@ -44,6 +47,19 @@ const previewStoreToolsImport = async (req, res, next) => {
         const storeCache = {};
 
         const parsedRecords = [];
+        const form = await FormDefinition.findOne({ slug: 'tool-form', isActive: true });
+        const formFields = form ? form.fields : [];
+        const dynamicColumns = buildDynamicImportColumns(formFields);
+        
+        // Define base schema keys from Tool model
+        const coreKeys = [
+            'description', 'toolCode', 'makeYear', 'capacity', 'safeWorkingLoad',
+            'toolType', 'metalType', 'toolVariant', 'purchaserName', 'purchaserContact',
+            'supplierCode', 'dateOfSupply', 'validityPeriod', 'testCertificate',
+            'project', 'currentSite', 'projectName', 'storeName', 
+            'subcontractorName', 'subcontractorCode', 'subcontractorMobile',
+            'jobCode', 'jobDescription', 'remarks'
+        ];
 
         for (let i = 0; i < rows.length; i++) {
             const row = rows[i];
@@ -54,86 +70,41 @@ const previewStoreToolsImport = async (req, res, next) => {
                 continue;
             }
 
-            // Extract values using the centralized TOOL_IMPORT_COLUMNS definitions
-            const getCol = (header) => TOOL_IMPORT_COLUMNS.find(c => c.header === header);
-            const Description = getColumnValue(row, getCol('Description'));
-            const toolCode = getColumnValue(row, getCol('Tool Code'));
-            const makeYear = getColumnValue(row, getCol('Make/Year'));
-            const Capacity = getColumnValue(row, getCol('Capacity'));
-            const safeWorkingLoad = getColumnValue(row, getCol('Safe Working Load'));
-            const toolType = getColumnValue(row, getCol('Tool Type'));
-            const metalType = getColumnValue(row, getCol('Metal Type'));
-            const toolVariant = getColumnValue(row, getCol('Tool Variant'));
-            const purchaserName = getColumnValue(row, getCol('Purchaser Name'));
-            const purchaserContact = getColumnValue(row, getCol('Purchaser Contact'));
-            const supplierCode = getColumnValue(row, getCol('Supplier Code'));
-            const dateOfSupply = getColumnValue(row, getCol('Date of Supply'));
-            const validityPeriod = getColumnValue(row, getCol('Validity Period'));
-            const testCertificate = getColumnValue(row, getCol('Test Certificate'));
-            
-            // The user's excel uses 'job_description' for the project name and 'current_site' for the store name
-            const projectName = getColumnValue(row, getCol('Project Name'));
-            const storeName = getColumnValue(row, getCol('Store Name'));
-            
-            const subcontractorName = getColumnValue(row, getCol('Subcontractor Name'));
-            const subcontractorCode = getColumnValue(row, getCol('Subcontractor Code'));
-            const subcontractorMobile = getColumnValue(row, getCol('Subcontractor Mobile'));
-            const jobCode = getColumnValue(row, getCol('Job Code'));
-            const jobDescription = getColumnValue(row, getCol('Job Description'));
-            const Remarks = getColumnValue(row, getCol('Remarks'));
-
             const errors = [];
-            let projectId = null;
-            let storeId = null;
-
-            // 1. Basic required fields validation
-            if (!Description) errors.push('Description is required');
-            if (!makeYear) errors.push('Make/Year is required');
-            if (!Capacity) errors.push('Capacity is required');
-            if (!safeWorkingLoad) errors.push('Safe Working Load is required');
-            if (!toolType) errors.push('Tool Type is required');
-            if (!metalType) errors.push('Metal Type is required');
-            if (!toolVariant) errors.push('Tool Variant is required');
-            if (!purchaserName) errors.push('Purchaser Name is required');
-            if (!dateOfSupply) errors.push('Date of Supply is required');
-
-            // 2. Override Project and Store Lookup using URL context
-            projectId = targetStore.project._id;
-            storeId = targetStore._id;
-            const actualProjectName = targetStore.project.name;
-            const actualStoreName = targetStore.name;
-
-            // 4. Construct tool payload
             const toolData = {
-                description: Description ? String(Description) : '',
-                toolCode: toolCode ? String(toolCode).trim() : undefined,
-                makeYear: makeYear ? String(makeYear) : '',
-                capacity: Capacity ? String(Capacity) : '',
-                safeWorkingLoad: safeWorkingLoad ? String(safeWorkingLoad) : '',
-                toolType: toolType ? String(toolType) : '',
-                metalType: metalType ? String(metalType) : '',
-                toolVariant: toolVariant ? String(toolVariant) : '',
-                purchaserName: purchaserName ? String(purchaserName) : '',
-                purchaserContact: purchaserContact ? String(purchaserContact) : undefined,
-                supplierCode: supplierCode ? String(supplierCode) : undefined,
-                dateOfSupply: dateOfSupply ? String(dateOfSupply) : '', // Format should be YYYY-MM-DD
-                validityPeriod: validityPeriod ? String(validityPeriod) : '',
-                testCertificate: testCertificate ? String(testCertificate) : undefined,
-                project: projectId,
-                currentSite: storeId,
-                projectName: actualProjectName,
-                storeName: actualStoreName,
-                subcontractorName: subcontractorName ? String(subcontractorName) : undefined,
-                subcontractorCode: subcontractorCode ? String(subcontractorCode) : undefined,
-                subcontractorMobile: subcontractorMobile ? String(subcontractorMobile) : undefined,
-                jobCode: jobCode ? String(jobCode) : undefined,
-                jobDescription: jobDescription ? String(jobDescription) : undefined,
-                remarks: Remarks ? String(Remarks) : undefined,
-                isValid: errors.length === 0,
+                isValid: true,
                 errors,
-                rowNumber
+                rowNumber,
+                customFields: {}
             };
 
+            // Override Project and Store Lookup using URL context
+            toolData.project = targetStore.project._id;
+            toolData.currentSite = targetStore._id;
+            toolData.projectName = targetStore.project.name;
+            toolData.storeName = targetStore.name;
+
+            // Iterate over all dynamic columns defined by the form schema
+            for (const colDef of dynamicColumns) {
+                const val = getColumnValue(row, colDef);
+                
+                // Validate required fields
+                if (colDef.required && (val === undefined || val === null || String(val).trim() === '')) {
+                    errors.push(`${colDef.header} is required`);
+                }
+
+                // If a value is provided, assign it to either core or custom field
+                if (val !== undefined && val !== null) {
+                    const stringVal = String(val).trim();
+                    if (coreKeys.includes(colDef.name)) {
+                        toolData[colDef.name] = stringVal;
+                    } else {
+                        toolData.customFields[colDef.name] = stringVal;
+                    }
+                }
+            }
+
+            toolData.isValid = errors.length === 0;
             parsedRecords.push(toolData);
         }
 
@@ -143,6 +114,7 @@ const previewStoreToolsImport = async (req, res, next) => {
                 totalRows: parsedRecords.length,
                 validCount: parsedRecords.filter(r => r.isValid).length,
                 invalidCount: parsedRecords.filter(r => !r.isValid).length,
+                columns: dynamicColumns,
                 records: parsedRecords
             }
         });
