@@ -93,11 +93,19 @@ class ToolIdGenerator {
             }
         }
 
-        // 6. Supplier Code (2-letter)
-        const supplierCode = (tool.supplierCode || 'XX').substring(0, 2).toUpperCase().padEnd(2, 'X');
+        // 6. Purchaser Code (2-letter from initials of first two words)
+        const purchaserWords = (tool.purchaserName || '').trim().split(/\s+/);
+        let purchaserCode = 'XX';
+        if (purchaserWords.length > 1 && purchaserWords[0].length > 0 && purchaserWords[1].length > 0) {
+            purchaserCode = (purchaserWords[0][0] + purchaserWords[1][0]).toUpperCase();
+        } else if (purchaserWords.length === 1 && purchaserWords[0].length >= 2) {
+            purchaserCode = purchaserWords[0].substring(0, 2).toUpperCase();
+        } else if (purchaserWords.length === 1 && purchaserWords[0].length === 1) {
+            purchaserCode = (purchaserWords[0][0] + 'X').toUpperCase();
+        }
 
         // Assemble prefix without spaces
-        return `${toolNameCode}${metalType}${toolVariantCode}${capacityCode}${monthYear}${supplierCode}`;
+        return `${toolNameCode}${metalType}${toolVariantCode}${capacityCode}${monthYear}${purchaserCode}`;
     }
 
     static async allocateSerials(count = 1) {

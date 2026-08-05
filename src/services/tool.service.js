@@ -1,3 +1,4 @@
+
 import mongoose from 'mongoose';
 import { Tool } from '../models/tool.model.js';
 import * as XLSX from 'xlsx';
@@ -74,9 +75,26 @@ const getToolsByStoreId = async (storeId, params = {}) => {
     };
 };
 
+const processToolData = (toolData) => {
+    const data = {};
+    const customFields = {};
+    const corePaths = Object.keys(Tool.schema.paths);
+    
+    for (const key of Object.keys(toolData)) {
+        if (corePaths.includes(key)) {
+            data[key] = toolData[key];
+        } else {
+            customFields[key] = toolData[key];
+        }
+    }
+    
+    data.customFields = { ...toolData.customFields, ...customFields };
+    return data;
+};
+
 const createToolInStore = async (toolData) => {
-    const data = { ...toolData };
-    if (!data.currentSite && data.storeId) data.currentSite = data.storeId;
+    const data = processToolData(toolData);
+    if (!data.currentSite && toolData.storeId) data.currentSite = toolData.storeId;
     if (!data.store && data.currentSite) data.store = data.currentSite;
     if (!data.project && data.currentSite) {
         const store = await mongoose.model('Store').findById(data.currentSite);
@@ -90,7 +108,8 @@ const createToolInStore = async (toolData) => {
 };
 
 const updateToolById = async (id, toolData) => {
-    const tool = await Tool.findByIdAndUpdate(id, toolData, { new: true, runValidators: true });
+    const data = processToolData(toolData);
+    const tool = await Tool.findByIdAndUpdate(id, data, { new: true, runValidators: true });
     if (!tool) throw new Error('Tool not found');
     return tool;
 };
