@@ -109,3 +109,24 @@ export const getToolFilterOptions = async (req, res, next) => {
         next(error);
     }
 };
+
+export const bulkEditTools = async (req, res, next) => {
+    try {
+        const { storeId } = req.params;
+        if (storeId && !verifyStoreAccess(req, storeId)) {
+            return res.status(403).json({ success: false, message: 'Access denied. You are not assigned to this store.' });
+        }
+        const { toolIds, filterCriteria, updates } = req.body;
+        const result = await toolService.bulkEditTools({
+            storeId,
+            toolIds,
+            filterCriteria,
+            updates,
+            user: req.user
+        });
+        res.status(200).json({ success: true, message: `Successfully updated ${result.count} tools`, data: result });
+    } catch (error) {
+        next(error);
+    }
+};
+

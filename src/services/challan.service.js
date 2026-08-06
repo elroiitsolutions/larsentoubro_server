@@ -323,39 +323,62 @@ export const getChallans = async (params = {}) => {
         sortOrder = 'desc'
     } = params;
 
-    const query = {};
+    const conditions = [];
 
     if (search) {
-        query.$or = [
-            { challanNumber: { $regex: search, $options: 'i' } },
-            { 'vendor.name': { $regex: search, $options: 'i' } },
-            { 'vendor.vendorCode': { $regex: search, $options: 'i' } },
-            { remarks: { $regex: search, $options: 'i' } },
-            { referenceDcNumber: { $regex: search, $options: 'i' } }
-        ];
+        conditions.push({
+            $or: [
+                { challanNumber: { $regex: search, $options: 'i' } },
+                { 'vendor.name': { $regex: search, $options: 'i' } },
+                { 'vendor.vendorCode': { $regex: search, $options: 'i' } },
+                { remarks: { $regex: search, $options: 'i' } },
+                { referenceDcNumber: { $regex: search, $options: 'i' } }
+            ]
+        });
     }
 
     if (vendor && vendor !== 'All') {
-        query['vendor._id'] = vendor;
+        if (mongoose.Types.ObjectId.isValid(vendor)) {
+            const objId = new mongoose.Types.ObjectId(vendor);
+            conditions.push({
+                $or: [
+                    { 'vendor._id': vendor },
+                    { 'vendor._id': objId },
+                    { 'vendor.name': vendor },
+                    { 'vendor.vendorCode': vendor }
+                ]
+            });
+        } else {
+            conditions.push({
+                $or: [
+                    { 'vendor._id': vendor },
+                    { 'vendor.name': { $regex: vendor, $options: 'i' } },
+                    { 'vendor.vendorCode': { $regex: vendor, $options: 'i' } }
+                ]
+            });
+        }
     }
 
     if (status && status !== 'All') {
-        query.status = status;
+        conditions.push({ status });
     }
 
     if (challanType && challanType !== 'All') {
-        query.challanType = challanType;
+        conditions.push({ challanType });
     }
 
     if (startDate || endDate) {
-        query.challanDate = {};
-        if (startDate) query.challanDate.$gte = new Date(startDate);
+        const dateCond = {};
+        if (startDate) dateCond.$gte = new Date(startDate);
         if (endDate) {
             const end = new Date(endDate);
             end.setHours(23, 59, 59, 999);
-            query.challanDate.$lte = end;
+            dateCond.$lte = end;
         }
+        conditions.push({ challanDate: dateCond });
     }
+
+    const query = conditions.length > 0 ? { $and: conditions } : {};
 
     const sort = {};
     if (sortBy) {

@@ -79,15 +79,33 @@ const previewStoreToolsImport = async (req, res, next) => {
             };
 
             // Override Project and Store Lookup using URL context
-            toolData.project = targetStore.project._id;
+            const projectObj = targetStore.project;
+            const projectNameStr = projectObj ? (projectObj.name || projectObj.projectName || String(projectObj._id || '')) : '';
+            const storeNameStr = targetStore.name || '';
+
+            toolData.project = projectObj ? projectObj._id : targetStore._id;
             toolData.currentSite = targetStore._id;
-            toolData.projectName = targetStore.project.name;
-            toolData.storeName = targetStore.name;
+            toolData.projectName = projectNameStr;
+            toolData.storeName = storeNameStr;
 
             // Iterate over all dynamic columns defined by the form schema
             for (const colDef of dynamicColumns) {
-                const val = getColumnValue(row, colDef);
+                let val = getColumnValue(row, colDef);
                 
+                const colNameNorm = (colDef.name || '').toLowerCase();
+                const colHeaderNorm = (colDef.header || '').toLowerCase();
+                const isProjectCol = colNameNorm.includes('project') || colHeaderNorm.includes('project');
+                const isStoreCol = colNameNorm.includes('store') || colHeaderNorm.includes('store') || colHeaderNorm.includes('site');
+
+                // If Excel row value is missing for project or store, auto-populate from targetStore context
+                if ((val === undefined || val === null || String(val).trim() === '')) {
+                    if (isProjectCol && projectNameStr) {
+                        val = projectNameStr;
+                    } else if (isStoreCol && storeNameStr) {
+                        val = storeNameStr;
+                    }
+                }
+
                 // Validate required fields
                 if (colDef.required && (val === undefined || val === null || String(val).trim() === '')) {
                     errors.push(`${colDef.header} is required`);
@@ -158,8 +176,10 @@ const commitStoreToolsImport = async (req, res, next) => {
             const toolsToInsert = validRecords.map((record, index) => {
                 const toolData = {
                     ...record,
-                    project: targetStore.project._id,
-                    currentSite: targetStore._id
+                    project: targetStore.project ? targetStore.project._id : targetStore._id,
+                    currentSite: targetStore._id,
+                    projectName: targetStore.project ? (targetStore.project.name || targetStore.project.projectName || '') : '',
+                    storeName: targetStore.name || ''
                 };
                 
                 // Generate Tool ID prefix using the utility

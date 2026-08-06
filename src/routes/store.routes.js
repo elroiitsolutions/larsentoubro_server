@@ -11,7 +11,8 @@ import {
     getToolsByStoreId,
     createToolInStore,
     exportToolsByStoreId,
-    getToolFilterOptions
+    getToolFilterOptions,
+    bulkEditTools
 } from '../controllers/tool.controller.js';
 import { importController } from '../controllers/import.controller.js';
 import { authenticate, requirePagePermission } from '../middleware/auth.middleware.js';
@@ -33,6 +34,7 @@ router.get('/:storeId/tools/export', exportToolsByStoreId);
 router.get('/:storeId/tools/filter-options', getToolFilterOptions);
 router.get('/:storeId/tools', getToolsByStoreId);
 router.post('/:storeId/tools', createToolInStore);
+router.post('/:storeId/tools/bulk-edit', bulkEditTools);
 
 // Store-Scoped Tool Bulk Import Endpoints
 router.get('/:storeId/tools/bulk-import/sample', importController.downloadStoreToolsSample);
