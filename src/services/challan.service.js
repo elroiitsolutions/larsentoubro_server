@@ -9,11 +9,16 @@ import { Vendor } from '../models/vendor.model.js';
 import * as vendorService from './vendor.service.js';
 
 /**
- * Helper to generate sequential Challan numbers like DC-2026-000001 or RC-2026-000001
+ * Helper to generate sequential Challan numbers like DC-26-001 or RC-26-001
+ * - Counter resets per year (using year in counterId)
+ * - DC and RC have separate counters
+ * - Atomic $inc operation ensures concurrency safety
+ * - Minimum 3-digit padding (001, 002... 999, 1000...)
  */
 export const generateChallanNumber = async (type, session = null) => {
-    const year = new Date().getFullYear();
-    const counterId = `challan_${type.toLowerCase()}_${year}`;
+    const fullYear = new Date().getFullYear();
+    const shortYear = String(fullYear).slice(-2);
+    const counterId = `challan_${type.toLowerCase()}_${fullYear}`;
     const prefix = type === 'Delivery' ? 'DC' : 'RC';
 
     const options = { new: true, upsert: true };
@@ -25,8 +30,8 @@ export const generateChallanNumber = async (type, session = null) => {
         options
     );
 
-    const serialNum = String(counter.seq).padStart(6, '0');
-    return `${prefix}-${year}-${serialNum}`;
+    const serialNum = String(counter.seq).padStart(3, '0');
+    return `${prefix}-${shortYear}-${serialNum}`;
 };
 
 /**
@@ -58,6 +63,27 @@ export const createDeliveryChallan = async (data, user = {}) => {
     const {
         vendorId,
         storeId,
+        siteCode = '',
+        vendorCode = '',
+        subcontractorName = '',
+        locationChainage = '',
+        workFrontLocation = '',
+        trnCode = '',
+        sendingCentreCode = '',
+        mrNo = '',
+        mrDate = '',
+        stockType = '',
+        ewayBillNo = '',
+        gatePassNo = '',
+        gatePassApprovedBy = '',
+        consignorTaxNo = '',
+        vehicleNo = '',
+        lrNo = '',
+        freightStatus = '',
+        receiverName = '',
+        receiverMobile = '',
+        mrnNo = '',
+        receiptDate = '',
         challanDate,
         deliveryDate,
         remarks = '',
@@ -80,8 +106,8 @@ export const createDeliveryChallan = async (data, user = {}) => {
         // Snapshot vendor info
         const vendorSnapshot = {
             _id: vendorDoc._id,
-            name: vendorDoc.name,
-            vendorCode: vendorDoc.vendorCode,
+            name: subcontractorName || vendorDoc.name,
+            vendorCode: vendorCode || vendorDoc.vendorCode,
             address: vendorDoc.address,
             gstNumber: vendorDoc.gstNumber,
             contactPerson: vendorDoc.contactPerson,
@@ -98,6 +124,27 @@ export const createDeliveryChallan = async (data, user = {}) => {
             challanNumber,
             challanType: 'Delivery',
             status: 'Active',
+            siteCode,
+            vendorCode: vendorCode || vendorDoc.vendorCode,
+            subcontractorName: subcontractorName || vendorDoc.name,
+            locationChainage,
+            workFrontLocation,
+            trnCode,
+            sendingCentreCode,
+            mrNo,
+            mrDate,
+            stockType,
+            ewayBillNo,
+            gatePassNo,
+            gatePassApprovedBy,
+            consignorTaxNo,
+            vehicleNo,
+            lrNo,
+            freightStatus,
+            receiverName,
+            receiverMobile,
+            mrnNo,
+            receiptDate,
             vendor: vendorSnapshot,
             store: storeId || null,
             challanDate: challanDate ? new Date(challanDate) : new Date(),
