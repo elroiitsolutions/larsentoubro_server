@@ -2,6 +2,7 @@ import * as xlsx from 'xlsx';
 import { Tool } from '../models/tool.model.js';
 import { Project } from '../models/project.model.js';
 import { Store } from '../models/store.model.js';
+import { ImportJob } from '../models/importJob.model.js';
 import ToolIdGenerator from '../utils/tool-id.js';
 import { 
     buildDynamicImportColumns,
@@ -10,6 +11,7 @@ import {
     generateDynamicSampleExcelWorkbook 
 } from '../config/tool-import-template.js';
 import { FormDefinition } from '../models/formDefinition.model.js';
+import { processImportJob, addJobListener, removeJobListener } from '../services/importWorker.service.js';
 
 const downloadStoreToolsSample = async (req, res, next) => {
     try {
@@ -24,6 +26,10 @@ const downloadStoreToolsSample = async (req, res, next) => {
     }
 };
 
+/**
+ * PREVIEW: Parse xlsx, validate rows, store in ImportJob, return summary + first page.
+ * Records are now stored server-side — the client never holds 100K records in memory.
+ */
 const previewStoreToolsImport = async (req, res, next) => {
     try {
         const { storeId } = req.params;
@@ -42,11 +48,6 @@ const previewStoreToolsImport = async (req, res, next) => {
         const sheet = workbook.Sheets[sheetName];
         const rows = xlsx.utils.sheet_to_json(sheet);
 
-        // Cache for lookups to avoid hammering the DB
-        const projectCache = {};
-        const storeCache = {};
-
-        const parsedRecords = [];
         const form = await FormDefinition.findOne({ slug: 'tool-form', isActive: true });
         const formFields = form ? form.fields : [];
         const dynamicColumns = buildDynamicImportColumns(formFields);
@@ -61,11 +62,15 @@ const previewStoreToolsImport = async (req, res, next) => {
             'jobCode', 'jobDescription', 'remarks'
         ];
 
+        const parsedRecords = [];
+        const projectObj = targetStore.project;
+        const projectNameStr = projectObj ? (projectObj.name || projectObj.projectName || String(projectObj._id || '')) : '';
+        const storeNameStr = targetStore.name || '';
+
         for (let i = 0; i < rows.length; i++) {
             const row = rows[i];
-            const rowNumber = i + 2; // +1 for 0-index, +1 for header
+            const rowNumber = i + 2;
 
-            // Skip instruction or note rows automatically
             if (isInstructionRow(row)) {
                 continue;
             }
@@ -78,17 +83,11 @@ const previewStoreToolsImport = async (req, res, next) => {
                 customFields: {}
             };
 
-            // Override Project and Store Lookup using URL context
-            const projectObj = targetStore.project;
-            const projectNameStr = projectObj ? (projectObj.name || projectObj.projectName || String(projectObj._id || '')) : '';
-            const storeNameStr = targetStore.name || '';
-
             toolData.project = projectObj ? projectObj._id : targetStore._id;
             toolData.currentSite = targetStore._id;
             toolData.projectName = projectNameStr;
             toolData.storeName = storeNameStr;
 
-            // Iterate over all dynamic columns defined by the form schema
             for (const colDef of dynamicColumns) {
                 let val = getColumnValue(row, colDef);
                 
@@ -97,7 +96,6 @@ const previewStoreToolsImport = async (req, res, next) => {
                 const isProjectCol = colNameNorm.includes('project') || colHeaderNorm.includes('project');
                 const isStoreCol = colNameNorm.includes('store') || colHeaderNorm.includes('store') || colHeaderNorm.includes('site');
 
-                // If Excel row value is missing for project or store, auto-populate from targetStore context
                 if ((val === undefined || val === null || String(val).trim() === '')) {
                     if (isProjectCol && projectNameStr) {
                         val = projectNameStr;
@@ -106,12 +104,10 @@ const previewStoreToolsImport = async (req, res, next) => {
                     }
                 }
 
-                // Validate required fields
                 if (colDef.required && (val === undefined || val === null || String(val).trim() === '')) {
                     errors.push(`${colDef.header} is required`);
                 }
 
-                // If a value is provided, assign it to either core or custom field
                 if (val !== undefined && val !== null) {
                     const stringVal = String(val).trim();
                     if (coreKeys.includes(colDef.name)) {
@@ -126,14 +122,43 @@ const previewStoreToolsImport = async (req, res, next) => {
             parsedRecords.push(toolData);
         }
 
+        const validCount = parsedRecords.filter(r => r.isValid).length;
+        const invalidCount = parsedRecords.filter(r => !r.isValid).length;
+
+        // Store in ImportJob instead of sending everything to the client
+        const importJob = new ImportJob({
+            store: targetStore._id,
+            project: projectObj ? projectObj._id : undefined,
+            status: 'preview_ready',
+            totalRows: parsedRecords.length,
+            validCount,
+            invalidCount,
+            columns: dynamicColumns,
+            records: parsedRecords,
+            originalFileName: req.file.originalname,
+            createdBy: req.user?._id
+        });
+
+        await importJob.save();
+
+        // Return summary + first page of records (not all 100K)
+        const pageSize = 25;
+        const firstPageRecords = parsedRecords.slice(0, pageSize);
+
         res.status(200).json({
             success: true,
             data: {
+                jobId: importJob._id,
                 totalRows: parsedRecords.length,
-                validCount: parsedRecords.filter(r => r.isValid).length,
-                invalidCount: parsedRecords.filter(r => !r.isValid).length,
+                validCount,
+                invalidCount,
                 columns: dynamicColumns,
-                records: parsedRecords
+                records: firstPageRecords,
+                pagination: {
+                    page: 1,
+                    pageSize,
+                    totalPages: Math.ceil(parsedRecords.length / pageSize)
+                }
             }
         });
 
@@ -142,95 +167,158 @@ const previewStoreToolsImport = async (req, res, next) => {
     }
 };
 
+/**
+ * GET paginated preview records from a stored ImportJob.
+ * Client requests pages on demand instead of holding everything in memory.
+ */
+const getImportJobRecords = async (req, res, next) => {
+    try {
+        const { jobId } = req.params;
+        const page = parseInt(req.query.page) || 1;
+        const pageSize = parseInt(req.query.pageSize) || 25;
+
+        const job = await ImportJob.findById(jobId).lean();
+        if (!job) {
+            return res.status(404).json({ success: false, message: 'Import job not found' });
+        }
+
+        const startIndex = (page - 1) * pageSize;
+        const endIndex = Math.min(startIndex + pageSize, job.records.length);
+        const records = job.records.slice(startIndex, endIndex);
+
+        res.status(200).json({
+            success: true,
+            data: {
+                records,
+                pagination: {
+                    page,
+                    pageSize,
+                    totalPages: Math.ceil(job.records.length / pageSize),
+                    totalRecords: job.records.length
+                }
+            }
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * GET import job status (for page reload / polling fallback).
+ */
+const getImportJobStatus = async (req, res, next) => {
+    try {
+        const { jobId } = req.params;
+        const job = await ImportJob.findById(jobId).select('-records').lean();
+        
+        if (!job) {
+            return res.status(404).json({ success: false, message: 'Import job not found' });
+        }
+
+        res.status(200).json({
+            success: true,
+            data: job
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * COMMIT: Kick off background batch processing and return immediately.
+ * The actual insert happens in importWorker.service.js via processImportJob().
+ */
 const commitStoreToolsImport = async (req, res, next) => {
     try {
         const { storeId } = req.params;
-        const { records } = req.body;
+        const { jobId } = req.body;
         
         const targetStore = await Store.findById(storeId).populate('project');
         if (!targetStore) {
             return res.status(404).json({ success: false, message: 'Target store not found.' });
         }
 
-        if (!records || !Array.isArray(records)) {
-            return res.status(400).json({ success: false, message: 'Invalid payload, expected array of records' });
+        const job = await ImportJob.findById(jobId);
+        if (!job) {
+            return res.status(404).json({ success: false, message: 'Import job not found.' });
         }
 
-        let successCount = 0;
-        let failedRows = [];
-        
-        // 1. Filter out invalid records from preview phase
-        const validRecords = records.filter(r => {
-            if (!r.isValid) {
-                failedRows.push({ row: r.rowNumber, reason: 'Record was invalid in preview phase' });
-                return false;
-            }
-            return true;
-        });
-
-        if (validRecords.length > 0) {
-            // 2. Pre-allocate serial numbers in one atomic DB operation
-            const startSerial = await ToolIdGenerator.allocateSerials(validRecords.length);
-            
-            // 3. Generate objects in memory
-            const toolsToInsert = validRecords.map((record, index) => {
-                const toolData = {
-                    ...record,
-                    project: targetStore.project ? targetStore.project._id : targetStore._id,
-                    currentSite: targetStore._id,
-                    projectName: targetStore.project ? (targetStore.project.name || targetStore.project.projectName || '') : '',
-                    storeName: targetStore.name || ''
-                };
-                
-                // Generate Tool ID prefix using the utility
-                const prefix = ToolIdGenerator.generateToolIdPrefix(toolData);
-                
-                // Assign sequential serial number based on index
-                const currentSerial = startSerial + index;
-                const serialStr = currentSerial.toString().padStart(3, '0');
-                
-                toolData.toolId = `${prefix}${serialStr}`;
-                toolData.qrLink = `https://lntqr.com/${toolData.toolId}`;
-                
-                return toolData;
-            });
-
-            // 4. Perform massive bulk insert in a single DB roundtrip
-            try {
-                await Tool.insertMany(toolsToInsert, { ordered: false });
-                successCount = toolsToInsert.length;
-            } catch (err) {
-                // If ordered: false, some might succeed and some fail.
-                // err.writeErrors contains the failed ones.
-                if (err.writeErrors) {
-                    successCount = err.insertedDocs ? err.insertedDocs.length : 0;
-                    for (const we of err.writeErrors) {
-                        const originalIndex = we.index;
-                        const originalRow = validRecords[originalIndex]?.rowNumber || 'Unknown';
-                        failedRows.push({ row: originalRow, reason: we.errmsg });
-                    }
-                } else {
-                    // Critical failure, none inserted
-                    throw err;
-                }
-            }
+        if (job.status !== 'preview_ready') {
+            return res.status(400).json({ success: false, message: `Job is in '${job.status}' state. Only 'preview_ready' jobs can be committed.` });
         }
 
-        res.status(200).json({
+        // Mark as processing
+        job.status = 'processing';
+        await job.save();
+
+        // Respond immediately — the client will track progress via SSE
+        res.status(202).json({
             success: true,
+            message: 'Import job started. Track progress via SSE.',
             data: {
-                successCount,
-                failedCount: failedRows.length,
-                failedRows
+                jobId: job._id,
+                status: 'processing',
+                totalToProcess: job.validCount
             }
         });
+
+        // Fire-and-forget: process in background
+        processImportJob(jobId, targetStore).catch(err => {
+            console.error(`[ImportController] Background processing error for job ${jobId}:`, err);
+        });
+
     } catch (error) {
         next(error);
     }
-}
+};
+
+/**
+ * SSE endpoint: Stream real-time progress updates for a running import job.
+ */
+const streamImportJobProgress = async (req, res, next) => {
+    try {
+        const { jobId } = req.params;
+
+        const job = await ImportJob.findById(jobId).select('-records').lean();
+        if (!job) {
+            return res.status(404).json({ success: false, message: 'Import job not found' });
+        }
+
+        // Set up SSE headers
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('X-Accel-Buffering', 'no');
+        res.flushHeaders();
+
+        // If job is already completed/failed, send final state and close
+        if (job.status === 'completed' || job.status === 'failed') {
+            res.write(`data: ${JSON.stringify({ status: job.status, progress: job.progress })}\n\n`);
+            res.end();
+            return;
+        }
+
+        // Send initial state
+        res.write(`data: ${JSON.stringify({ status: job.status, progress: job.progress })}\n\n`);
+
+        // Register this response stream for progress updates
+        addJobListener(jobId, res);
+
+        // Cleanup on client disconnect
+        req.on('close', () => {
+            removeJobListener(jobId, res);
+        });
+
+    } catch (error) {
+        next(error);
+    }
+};
 
 export const importController = {
     previewStoreToolsImport,
     commitStoreToolsImport,
-    downloadStoreToolsSample
+    downloadStoreToolsSample,
+    getImportJobRecords,
+    getImportJobStatus,
+    streamImportJobProgress
 };
