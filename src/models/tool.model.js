@@ -24,35 +24,55 @@ const toolSchema = new mongoose.Schema({
     jobCode: { type: String },
     jobDescription: { type: String },
     remarks: { type: String },
-    toolId: { type: String, unique: true },
+    toolId: { type: String, index: true },
+    serialNumber: { type: Number, index: true },
     qrLink: { type: String },
     status: { type: String, default: 'Available' },
+    division: { type: String, default: 'Buildings & Infrastructure' },
+    hub: { type: mongoose.Schema.Types.ObjectId, ref: 'Store' },
+    manufactureDate: { type: Date },
+    lastInspectionDate: { type: Date },
+    nextInspectionDueDate: { type: Date },
+    inspectionStatus: { type: String, default: 'Pending' },
+    lifeExtensionYears: { type: Number, default: 0 },
+    extensionApprovedBy: { type: String },
+    extensionApprovedAt: { type: Date },
     customFields: { type: Map, of: mongoose.Schema.Types.Mixed, default: {} }
 }, {
     timestamps: true
 });
 
-// Pre-save hook to generate toolId if it doesn't exist
+// Tool ID is unique per Project
+toolSchema.index({ project: 1, toolId: 1 }, { unique: true });
+
+// Pre-save hook to generate toolId if it doesn't exist and ensure numeric serialNumber is set
 toolSchema.pre('save', async function (next) {
     if (this.isNew && !this.toolId) {
         try {
-            const prefix = ToolIdGenerator.generateToolIdPrefix(this);
-
-            // 7. Running Serial Number (unlimited length global, minimum 3 digits)
-            const startSerial = await ToolIdGenerator.allocateSerials(1);
-            const serial = startSerial.toString().padStart(3, '0');
-
-            this.toolId = `${prefix}${serial}`;
-            this.qrLink = `https://lntqr.com/${this.toolId}`;
+            const projectScopeKey = ToolIdGenerator.getProjectScopeKey(this);
+            const serialNum = await ToolIdGenerator.allocateSerial(projectScopeKey);
+            this.toolId = ToolIdGenerator.generateToolId(this, serialNum);
+            this.serialNumber = serialNum;
+            this.qrLink = ToolIdGenerator.generateQrLink(this.toolId);
         } catch (error) {
             console.error("Error generating toolId:", error);
             // Fallback just in case
             const fallbackCount = await mongoose.model('Tool').countDocuments();
-            this.toolId = `T-${(fallbackCount + 1).toString().padStart(3, '0')}`;
-            this.qrLink = `https://lntqr.com/${this.toolId}`;
+            const fallbackSerial = (fallbackCount + 1);
+            this.serialNumber = fallbackSerial;
+            this.toolId = `T-${fallbackSerial.toString().padStart(4, '0')}`;
+            this.qrLink = ToolIdGenerator.generateQrLink(this.toolId);
+        }
+    }
+
+    if (this.toolId && (!this.serialNumber || isNaN(this.serialNumber))) {
+        const match = this.toolId.match(/\d+$/);
+        if (match) {
+            this.serialNumber = parseInt(match[0], 10);
         }
     }
     next();
 });
 
 export const Tool = mongoose.model('Tool', toolSchema);
+

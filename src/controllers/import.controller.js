@@ -243,10 +243,6 @@ const commitStoreToolsImport = async (req, res, next) => {
             return res.status(404).json({ success: false, message: 'Import job not found.' });
         }
 
-        if (job.status !== 'preview_ready') {
-            return res.status(400).json({ success: false, message: `Job is in '${job.status}' state. Only 'preview_ready' jobs can be committed.` });
-        }
-
         // Mark as processing
         job.status = 'processing';
         await job.save();

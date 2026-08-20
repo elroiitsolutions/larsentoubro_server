@@ -76,8 +76,12 @@ export const processImportJob = async (jobId, targetStore) => {
             return;
         }
 
-        // Pre-allocate ALL serial numbers in one atomic operation
-        const startSerial = await ToolIdGenerator.allocateSerials(totalToProcess);
+        // Pre-allocate ALL serial numbers for this Project in one atomic operation
+        const projectObj = targetStore.project;
+        const projectIdStr = projectObj ? (projectObj._id || projectObj) : targetStore._id;
+        const projectScopeKey = ToolIdGenerator.getProjectScopeKey({ project: projectIdStr });
+
+        const startSerial = await ToolIdGenerator.allocateSerials(totalToProcess, projectScopeKey);
 
         let totalSuccess = 0;
         let totalFailed = 0;
@@ -92,27 +96,31 @@ export const processImportJob = async (jobId, targetStore) => {
             // Build tool documents for this batch
             const toolsToInsert = batch.map((record, batchIdx) => {
                 const globalIdx = batchStart + batchIdx;
+                const rawRecord = typeof record.toObject === 'function' ? record.toObject() : { ...record };
+
+                // Delete subdocument _id so MongoDB assigns a new primary key for each Tool
+                delete rawRecord._id;
+
                 const toolData = {
-                    ...record,
+                    ...rawRecord,
                     project: targetStore.project ? targetStore.project._id : targetStore._id,
                     currentSite: targetStore._id,
                     projectName: targetStore.project ? (targetStore.project.name || targetStore.project.projectName || '') : '',
                     storeName: targetStore.name || ''
                 };
 
-                // Remove preview-only fields
+                // Remove preview-only & internal fields
+                delete toolData._id;
                 delete toolData.isValid;
                 delete toolData.errors;
                 delete toolData.rowNumber;
                 delete toolData.projectName;
                 delete toolData.storeName;
 
-                const prefix = ToolIdGenerator.generateToolIdPrefix(toolData);
                 const currentSerial = startSerial + globalIdx;
-                const serialStr = currentSerial.toString().padStart(3, '0');
-
-                toolData.toolId = `${prefix}${serialStr}`;
-                toolData.qrLink = `https://lntqr.com/${toolData.toolId}`;
+                toolData.serialNumber = currentSerial;
+                toolData.toolId = ToolIdGenerator.generateToolId(toolData, currentSerial);
+                toolData.qrLink = ToolIdGenerator.generateQrLink(toolData.toolId);
 
                 return toolData;
             });
@@ -133,9 +141,10 @@ export const processImportJob = async (jobId, targetStore) => {
                             const originalBatchIdx = we.index;
                             const originalRecord = batch[originalBatchIdx];
                             totalFailed++;
+                            const errMsg = we.errmsg || we.message || (we.err && we.err.errmsg) || err.message || 'Database insert error';
                             allFailedRows.push({
                                 row: originalRecord?.rowNumber || 'Unknown',
-                                reason: we.errmsg || 'Database insert error'
+                                reason: errMsg
                             });
                         }
                     }

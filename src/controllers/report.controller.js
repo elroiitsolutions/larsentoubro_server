@@ -1,44 +1,8 @@
 import * as reportService from '../services/report.service.js';
 
-export const getDeliveryChallanReport = async (req, res, next) => {
+export const getToolsReport = async (req, res, next) => {
     try {
-        const result = await reportService.getDeliveryChallanReport(req.query);
-        res.status(200).json({ success: true, ...result });
-    } catch (error) {
-        next(error);
-    }
-};
-
-export const getReturnChallanReport = async (req, res, next) => {
-    try {
-        const result = await reportService.getReturnChallanReport(req.query);
-        res.status(200).json({ success: true, ...result });
-    } catch (error) {
-        next(error);
-    }
-};
-
-export const getMissingToolsReport = async (req, res, next) => {
-    try {
-        const result = await reportService.getMissingToolsReport(req.query);
-        res.status(200).json({ success: true, ...result });
-    } catch (error) {
-        next(error);
-    }
-};
-
-export const getToolMovementReport = async (req, res, next) => {
-    try {
-        const result = await reportService.getToolMovementReport(req.query);
-        res.status(200).json({ success: true, ...result });
-    } catch (error) {
-        next(error);
-    }
-};
-
-export const getAuditLogsReport = async (req, res, next) => {
-    try {
-        const result = await reportService.getAuditLogsReport(req.query);
+        const result = await reportService.getToolsReport(req.query);
         res.status(200).json({ success: true, ...result });
     } catch (error) {
         next(error);
@@ -47,8 +11,8 @@ export const getAuditLogsReport = async (req, res, next) => {
 
 export const exportReport = async (req, res, next) => {
     try {
-        const { type = 'delivery', format = 'excel' } = req.query;
-        const buffer = await reportService.generateReportExportBuffer(type, req.query, format);
+        const { type = 'tools', format = 'excel' } = req.query;
+        const buffer = await reportService.generateReportExportBuffer(type, format, req.query);
 
         const filename = `${type}_report_${new Date().toISOString().split('T')[0]}.${format === 'csv' ? 'csv' : 'xlsx'}`;
         const contentType = format === 'csv'

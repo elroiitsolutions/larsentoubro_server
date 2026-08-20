@@ -2,6 +2,7 @@
 import mongoose from 'mongoose';
 import { Tool } from '../models/tool.model.js';
 import ToolAuditLog from '../models/toolAuditLog.model.js';
+import ToolIdGenerator from '../utils/tool-id.js';
 import * as XLSX from 'xlsx';
 
 const applyAdvancedFilters = (query, params) => {
@@ -42,7 +43,7 @@ const applyAdvancedFilters = (query, params) => {
 };
 
 const getToolsByStoreId = async (storeId, params = {}) => {
-    const { page = 1, limit = 10, sortBy = 'createdAt', sortOrder = 'desc' } = params;
+    const { page = 1, limit = 10, sortBy = 'serialNumber', sortOrder = 'asc' } = params;
     const query = {
         $or: [
             { currentSite: storeId },
@@ -51,9 +52,26 @@ const getToolsByStoreId = async (storeId, params = {}) => {
     };
     
     applyAdvancedFilters(query, params);
+
+    // Self-healing backfill for any legacy records missing numeric serialNumber
+    try {
+        const unindexed = await Tool.find({ toolId: { $exists: true }, $or: [{ serialNumber: { $exists: false } }, { serialNumber: null }] }).limit(50);
+        for (const t of unindexed) {
+            const match = t.toolId ? t.toolId.match(/\d+$/) : null;
+            if (match) {
+                t.serialNumber = parseInt(match[0], 10);
+                await t.save();
+            }
+        }
+    } catch (e) {
+        // Silently ignore backfill errors
+    }
     
     const sort = {};
-    if (sortBy) {
+    if (sortBy === 'toolId' || sortBy === 'serialNumber') {
+        sort.serialNumber = sortOrder === 'asc' ? 1 : -1;
+        sort.toolId = sortOrder === 'asc' ? 1 : -1;
+    } else if (sortBy) {
         sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
     }
     
@@ -105,6 +123,13 @@ const createToolInStore = async (toolData) => {
             data.project = store.project;
         }
     }
+    if (!data.toolId) {
+        const projectScopeKey = ToolIdGenerator.getProjectScopeKey(data);
+        const serialNum = await ToolIdGenerator.allocateSerial(projectScopeKey);
+        data.toolId = ToolIdGenerator.generateToolId(data, serialNum);
+        data.serialNumber = serialNum;
+        data.qrLink = ToolIdGenerator.generateQrLink(data.toolId);
+    }
     const tool = new Tool(data);
     await tool.save();
     return tool;
@@ -112,6 +137,8 @@ const createToolInStore = async (toolData) => {
 
 const updateToolById = async (id, toolData) => {
     const data = processToolData(toolData);
+    delete data.toolId;
+    delete data.qrLink;
     const tool = await Tool.findByIdAndUpdate(id, data, { new: true, runValidators: true });
     if (!tool) throw new Error('Tool not found');
     return tool;
@@ -148,23 +175,24 @@ const exportToolsByStoreId = async (storeId, params = {}) => {
         .lean();
         
     const data = tools.map(t => ({
-        'description': t.description,
-        'tool_code': t.toolCode || '',
-        'make': t.makeYear,
-        'capacity': t.capacity,
-        'safe_working_load': t.safeWorkingLoad,
-        'purchaser_name': t.purchaserName,
-        'supplier_code': t.supplierCode,
-        'date_of_supply': t.dateOfSupply,
-        'tool_type': t.toolType,
-        'metal_type': t.metalType,
-        'tool_varient': t.toolVariant,
-        'purchaser_contact': t.purchaserContact,
-        'job_code': t.jobCode,
-        'job_description': t.jobDescription,
-        'current_site': t.currentSite ? t.currentSite.location : '',
-        'tool id creation': t.toolId,
-        'QR LINK ': t.qrLink
+        'description': t.description || '',
+        'make': t.makeYear || '',
+        'capacity': t.capacity || '',
+        'safe_working_load': t.safeWorkingLoad || '',
+        'purchaser_name': t.purchaserName || '',
+        'supplier_code': t.supplierCode || '',
+        'date_of_supply': t.dateOfSupply || '',
+        'tool_type': t.toolType || '',
+        'metal_type': t.metalType || '',
+        'tool_varient': t.toolVariant || '',
+        'purchaser_contact': t.purchaserContact || '',
+        'job_code': t.jobCode || '',
+        'job_description': t.jobDescription || '',
+        'current_site': t.currentSite ? (t.currentSite.name || t.currentSite.location || '') : '',
+        'validation': t.validityPeriod || t.validation || t.customFields?.validation || '',
+        'ITEM_CODE': t.toolCode || '',
+        'tool id creation': t.toolId || '',
+        'QR LINK ': t.qrLink || ''
     }));
 
     const worksheet = XLSX.utils.json_to_sheet(data);
