@@ -37,6 +37,10 @@ export const authenticate = async (req, res, next) => {
         if (authHeader && authHeader.startsWith('Bearer ')) {
             token = authHeader.split(' ')[1];
         }
+        // Fallback: accept token from query param (needed for SSE/EventSource which can't set headers)
+        if (!token && req.query.token) {
+            token = req.query.token;
+        }
 
         if (!token) {
             return res.status(401).json({

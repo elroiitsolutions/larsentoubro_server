@@ -2,6 +2,7 @@
 import mongoose from 'mongoose';
 import { Tool } from '../models/tool.model.js';
 import ToolAuditLog from '../models/toolAuditLog.model.js';
+import ToolIdGenerator from '../utils/tool-id.js';
 import * as XLSX from 'xlsx';
 
 const applyAdvancedFilters = (query, params) => {
@@ -36,13 +37,25 @@ const applyAdvancedFilters = (query, params) => {
         if (field === 'status' && query.status) continue;
         const val = params[field];
         if (val && val !== 'All' && val !== '' && val !== undefined) {
-            query[field] = { $regex: val.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+            if (field === 'validityPeriod') {
+                if (!query.$and) query.$and = [];
+                const escapedVal = val.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                query.$and.push({
+                    $or: [
+                        { validityPeriod: { $regex: escapedVal, $options: 'i' } },
+                        { 'customFields.validation': { $regex: escapedVal, $options: 'i' } },
+                        { 'customFields.validityPeriod': { $regex: escapedVal, $options: 'i' } }
+                    ]
+                });
+            } else {
+                query[field] = { $regex: val.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+            }
         }
     }
 };
 
 const getToolsByStoreId = async (storeId, params = {}) => {
-    const { page = 1, limit = 10, sortBy = 'createdAt', sortOrder = 'desc' } = params;
+    const { page = 1, limit = 10, sortBy = 'serialNumber', sortOrder = 'asc' } = params;
     const query = {
         $or: [
             { currentSite: storeId },
@@ -51,9 +64,26 @@ const getToolsByStoreId = async (storeId, params = {}) => {
     };
     
     applyAdvancedFilters(query, params);
+
+    // Self-healing backfill for any legacy records missing numeric serialNumber
+    try {
+        const unindexed = await Tool.find({ toolId: { $exists: true }, $or: [{ serialNumber: { $exists: false } }, { serialNumber: null }] }).limit(50);
+        for (const t of unindexed) {
+            const match = t.toolId ? t.toolId.match(/\d+$/) : null;
+            if (match) {
+                t.serialNumber = parseInt(match[0], 10);
+                await t.save();
+            }
+        }
+    } catch (e) {
+        // Silently ignore backfill errors
+    }
     
     const sort = {};
-    if (sortBy) {
+    if (sortBy === 'toolId' || sortBy === 'serialNumber') {
+        sort.serialNumber = sortOrder === 'asc' ? 1 : -1;
+        sort.toolId = sortOrder === 'asc' ? 1 : -1;
+    } else if (sortBy) {
         sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
     }
     
@@ -105,13 +135,53 @@ const createToolInStore = async (toolData) => {
             data.project = store.project;
         }
     }
+    if (!data.toolId) {
+        const projectScopeKey = ToolIdGenerator.getProjectScopeKey(data);
+        const serialNum = await ToolIdGenerator.allocateSerial(projectScopeKey);
+        data.toolId = ToolIdGenerator.generateToolId(data, serialNum);
+        data.serialNumber = serialNum;
+        data.qrLink = ToolIdGenerator.generateQrLink(data.toolId);
+    }
     const tool = new Tool(data);
     await tool.save();
     return tool;
 };
 
+const addValidityPeriods = (existingVal, newVal) => {
+    if (newVal === undefined || newVal === null || String(newVal).trim() === '') {
+        return existingVal;
+    }
+    const newMatch = String(newVal).match(/(\d+)/);
+    if (!newMatch) {
+        return newVal;
+    }
+    const newYears = parseInt(newMatch[1], 10);
+    if (!existingVal || existingVal === 'N/A' || String(existingVal).trim() === '' || String(existingVal).trim() === '-') {
+        return String(newVal).toLowerCase().includes('year') ? newVal : `${newVal} Years`;
+    }
+    const existingMatch = String(existingVal).match(/(\d+)/);
+    if (!existingMatch) {
+        return String(newVal).toLowerCase().includes('year') ? newVal : `${newVal} Years`;
+    }
+    const existingYears = parseInt(existingMatch[1], 10);
+    const totalYears = existingYears + newYears;
+    return `${totalYears} Years`;
+};
+
 const updateToolById = async (id, toolData) => {
     const data = processToolData(toolData);
+    delete data.toolId;
+    delete data.qrLink;
+    if (toolData.validityPeriod !== undefined) {
+        const existingTool = await Tool.findById(id);
+        if (existingTool) {
+            const rawVal = existingTool.validityPeriod || '';
+            const existingVal = (rawVal && rawVal !== 'N/A')
+                ? rawVal
+                : (existingTool.customFields?.get?.('validation') || existingTool.customFields?.get?.('validityPeriod') || rawVal);
+            data.validityPeriod = addValidityPeriods(existingVal, toolData.validityPeriod);
+        }
+    }
     const tool = await Tool.findByIdAndUpdate(id, data, { new: true, runValidators: true });
     if (!tool) throw new Error('Tool not found');
     return tool;
@@ -148,23 +218,26 @@ const exportToolsByStoreId = async (storeId, params = {}) => {
         .lean();
         
     const data = tools.map(t => ({
-        'description': t.description,
-        'tool_code': t.toolCode || '',
-        'make': t.makeYear,
-        'capacity': t.capacity,
-        'safe_working_load': t.safeWorkingLoad,
-        'purchaser_name': t.purchaserName,
-        'supplier_code': t.supplierCode,
-        'date_of_supply': t.dateOfSupply,
-        'tool_type': t.toolType,
-        'metal_type': t.metalType,
-        'tool_varient': t.toolVariant,
-        'purchaser_contact': t.purchaserContact,
-        'job_code': t.jobCode,
-        'job_description': t.jobDescription,
-        'current_site': t.currentSite ? t.currentSite.location : '',
-        'tool id creation': t.toolId,
-        'QR LINK ': t.qrLink
+        'description': t.description || '',
+        'make': t.makeYear || '',
+        'capacity': t.capacity || '',
+        'safe_working_load': t.safeWorkingLoad || '',
+        'purchaser_name': t.purchaserName || '',
+        'supplier_code': t.supplierCode || '',
+        'date_of_supply': t.dateOfSupply || '',
+        'tool_type': t.toolType || '',
+        'metal_type': t.metalType || '',
+        'tool_varient': t.toolVariant || '',
+        'purchaser_contact': t.purchaserContact || '',
+        'job_code': t.jobCode || '',
+        'job_description': t.jobDescription || '',
+        'current_site': t.currentSite ? (t.currentSite.name || t.currentSite.location || '') : '',
+        'validation': (t.validityPeriod && t.validityPeriod !== 'N/A')
+            ? t.validityPeriod
+            : (t.customFields?.validation || t.customFields?.validityPeriod || t.validityPeriod || ''),
+        'ITEM_CODE': t.toolCode || '',
+        'tool id creation': t.toolId || '',
+        'QR LINK ': t.qrLink || ''
     }));
 
     const worksheet = XLSX.utils.json_to_sheet(data);
@@ -200,7 +273,17 @@ const getToolFilterOptions = async (storeId) => {
         ]
     };
     await Promise.all(fields.map(async (field) => {
-        const values = await Tool.distinct(field, storeQuery);
+        let values = [];
+        if (field === 'validityPeriod') {
+            const [coreVals, customValidationVals, customPeriodVals] = await Promise.all([
+                Tool.distinct('validityPeriod', storeQuery),
+                Tool.distinct('customFields.validation', storeQuery),
+                Tool.distinct('customFields.validityPeriod', storeQuery)
+            ]);
+            values = Array.from(new Set([...coreVals, ...customValidationVals, ...customPeriodVals]));
+        } else {
+            values = await Tool.distinct(field, storeQuery);
+        }
         options[field] = values
             .filter(v => v !== null && v !== undefined && String(v).trim() !== '')
             .map(String)
@@ -236,23 +319,6 @@ const bulkEditTools = async ({ storeId, toolIds, filterCriteria, updates, user }
     }
 
     const corePaths = Object.keys(Tool.schema.paths);
-    const setFields = {};
-    const setCustomFields = {};
-
-    for (const [key, value] of Object.entries(updates)) {
-        if (value === undefined || value === null || value === '') continue;
-        if (corePaths.includes(key)) {
-            setFields[key] = value;
-        } else {
-            setCustomFields[`customFields.${key}`] = value;
-        }
-    }
-
-    const updateQueryPayload = { ...setFields, ...setCustomFields };
-    if (Object.keys(updateQueryPayload).length === 0) {
-        throw new Error('No valid update values provided');
-    }
-
     const snapshots = [];
     const targetToolIds = [];
 
@@ -263,12 +329,25 @@ const bulkEditTools = async ({ storeId, toolIds, filterCriteria, updates, user }
 
         for (const [key, value] of Object.entries(updates)) {
             if (value === undefined || value === null || value === '') continue;
+
+            let finalValue = value;
+            if (key === 'validityPeriod') {
+                const rawVal = tool.validityPeriod || '';
+                const existingVal = (rawVal && rawVal !== 'N/A')
+                    ? rawVal
+                    : (tool.customFields?.get?.('validation') || tool.customFields?.get?.('validityPeriod') || rawVal);
+                finalValue = addValidityPeriods(existingVal, value);
+            }
+
             if (corePaths.includes(key)) {
                 oldValues[key] = tool[key];
-                newValues[key] = value;
+                newValues[key] = finalValue;
+                tool[key] = finalValue;
             } else {
                 oldValues[key] = tool.customFields ? tool.customFields.get(key) : undefined;
-                newValues[key] = value;
+                newValues[key] = finalValue;
+                if (!tool.customFields) tool.customFields = new Map();
+                tool.customFields.set(key, finalValue);
             }
         }
 
@@ -278,14 +357,9 @@ const bulkEditTools = async ({ storeId, toolIds, filterCriteria, updates, user }
             oldValues,
             newValues
         });
-    }
 
-    const matchedIds = toolsToUpdate.map(t => t._id);
-    await Tool.updateMany(
-        { _id: { $in: matchedIds } },
-        { $set: updateQueryPayload },
-        { runValidators: true }
-    );
+        await tool.save();
+    }
 
     const auditLog = new ToolAuditLog({
         user: {

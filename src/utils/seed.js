@@ -1,4 +1,5 @@
 import { FormDefinition } from '../models/formDefinition.model.js';
+import { seedDashboardData } from './seed-dashboard-data.js';
 
 const defaultForms = [
   {
@@ -51,6 +52,7 @@ export const seedDatabase = async () => {
         console.log(`[Seed] Created default form: ${form.slug}`);
       }
     }
+    await seedDashboardData();
   } catch (error) {
     console.error('[Seed] Error seeding database:', error);
   }

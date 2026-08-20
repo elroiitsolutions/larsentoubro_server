@@ -42,4 +42,9 @@ router.get('/tools/bulk-import/sample', importController.downloadStoreToolsSampl
 router.post('/:storeId/tools/bulk-import/preview', upload.single('file'), importController.previewStoreToolsImport);
 router.post('/:storeId/tools/bulk-import/commit', importController.commitStoreToolsImport);
 
+// Import Job Endpoints (for paginated preview + progress tracking)
+router.get('/:storeId/tools/bulk-import/jobs/:jobId', importController.getImportJobStatus);
+router.get('/:storeId/tools/bulk-import/jobs/:jobId/records', importController.getImportJobRecords);
+router.get('/:storeId/tools/bulk-import/jobs/:jobId/progress', importController.streamImportJobProgress);
+
 export default router;

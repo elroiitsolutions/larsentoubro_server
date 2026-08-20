@@ -7,6 +7,7 @@ import toolRoutes from './tool.routes.js';
 import vendorRoutes from './vendor.routes.js';
 import challanRoutes from './challan.routes.js';
 import reportRoutes from './report.routes.js';
+import dashboardRoutes from './dashboard.routes.js';
 import { attachUser } from '../middleware/auth.middleware.js';
 
 const router = Router();
@@ -22,5 +23,6 @@ router.use('/tools', toolRoutes);
 router.use('/vendors', vendorRoutes);
 router.use('/challans', challanRoutes);
 router.use('/reports', reportRoutes);
+router.use('/dashboard', dashboardRoutes);
 
 export default router;
