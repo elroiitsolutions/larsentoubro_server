@@ -108,13 +108,15 @@ class ToolIdGenerator {
         return `${toolNameCode}${metalType}${toolVariantCode}${capacityCode}${monthYear}${purchaserCode}`;
     }
 
-    static async allocateSerials(count = 1) {
-        // Initialize counter if it doesn't exist
-        const exists = await Counter.findById('tool_serial');
+    static async allocateSerials(count = 1, projectId = null) {
+        const counterKey = projectId ? `tool_serial_${String(projectId)}` : 'tool_serial';
+
+        // Initialize counter if it doesn't exist for this project
+        const exists = await Counter.findById(counterKey);
         if (!exists) {
-            // Find highest serial from existing tools
-            // Note: Since toolId structure is PREFIX + SERIAL, we can extract the trailing digits
-            const tools = await Tool.find({}, { toolId: 1 }).lean();
+            // Find highest serial from existing tools within this project
+            const filter = projectId ? { project: projectId } : {};
+            const tools = await Tool.find(filter, { toolId: 1 }).lean();
             let maxSerial = 0;
             for (const t of tools) {
                 if (t.toolId) {
@@ -128,15 +130,15 @@ class ToolIdGenerator {
                 }
             }
             await Counter.findByIdAndUpdate(
-                'tool_serial', 
+                counterKey, 
                 { $setOnInsert: { seq: maxSerial } }, 
                 { upsert: true }
             );
         }
 
-        // Atomically increment and get the new state
+        // Atomically increment and get the new state for this project
         const counter = await Counter.findByIdAndUpdate(
-            'tool_serial',
+            counterKey,
             { $inc: { seq: count } },
             { new: true, upsert: true }
         );

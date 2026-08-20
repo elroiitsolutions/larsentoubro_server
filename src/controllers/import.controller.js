@@ -169,8 +169,9 @@ const commitStoreToolsImport = async (req, res, next) => {
         });
 
         if (validRecords.length > 0) {
-            // 2. Pre-allocate serial numbers in one atomic DB operation
-            const startSerial = await ToolIdGenerator.allocateSerials(validRecords.length);
+            // 2. Pre-allocate serial numbers in one atomic DB operation per project scope
+            const targetProjectId = targetStore.project ? (targetStore.project._id || targetStore.project) : targetStore._id;
+            const startSerial = await ToolIdGenerator.allocateSerials(validRecords.length, targetProjectId);
             
             // 3. Generate objects in memory
             const toolsToInsert = validRecords.map((record, index) => {

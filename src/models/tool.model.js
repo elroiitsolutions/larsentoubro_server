@@ -38,8 +38,9 @@ toolSchema.pre('save', async function (next) {
         try {
             const prefix = ToolIdGenerator.generateToolIdPrefix(this);
 
-            // 7. Running Serial Number (unlimited length global, minimum 3 digits)
-            const startSerial = await ToolIdGenerator.allocateSerials(1);
+            // 7. Running Serial Number (per-project, minimum 3 digits)
+            const projectId = this.project?._id || this.project;
+            const startSerial = await ToolIdGenerator.allocateSerials(1, projectId);
             const serial = startSerial.toString().padStart(3, '0');
 
             this.toolId = `${prefix}${serial}`;
