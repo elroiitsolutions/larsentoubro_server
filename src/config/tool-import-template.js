@@ -13,6 +13,7 @@ const KNOWN_FIELD_ALIASES = {
     purchaserContact: ['purchasercontact', 'purchaser_contact', 'purchaser contact'],
     supplierCode: ['suppliercode', 'supplier_code', 'supplier code'],
     dateOfSupply: ['dateofsupply', 'date_of_supply', 'date of supply', 'supply_date', 'date'],
+    validityPeriod: ['validityperiod', 'validity_period', 'validity period', 'validation', 'validity', 'safety_validity_period', 'safety validity period'],
     jobCode: ['jobcode', 'job_code', 'job code'],
     jobDescription: ['jobdescription', 'job_description', 'job description'],
     currentSite: ['currentsite', 'current_site', 'current site', 'site', 'store', 'store_name']
@@ -33,7 +34,7 @@ export const PREFERRED_COLUMN_ORDER = [
     { name: 'jobCode', header: 'job_code', type: 'text', required: false, example: 'JOB-101' },
     { name: 'jobDescription', header: 'job_description', type: 'text', required: false, example: 'Civil Lifting Work' },
     { name: 'currentSite', header: 'current_site', type: 'text', required: false, example: 'Central Site Store' },
-    { name: 'validation', header: 'validation', type: 'text', required: false, example: 'Valid' },
+    { name: 'validityPeriod', header: 'validity_period', type: 'text', required: false, example: '3 Years' },
     { name: 'toolCode', header: 'ITEM CODE', type: 'text', required: false, example: 'HJ-050' }
 ];
 

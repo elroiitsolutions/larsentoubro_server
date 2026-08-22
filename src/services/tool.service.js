@@ -37,7 +37,19 @@ const applyAdvancedFilters = (query, params) => {
         if (field === 'status' && query.status) continue;
         const val = params[field];
         if (val && val !== 'All' && val !== '' && val !== undefined) {
-            query[field] = { $regex: val.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+            if (field === 'validityPeriod') {
+                if (!query.$and) query.$and = [];
+                const escapedVal = val.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                query.$and.push({
+                    $or: [
+                        { validityPeriod: { $regex: escapedVal, $options: 'i' } },
+                        { 'customFields.validation': { $regex: escapedVal, $options: 'i' } },
+                        { 'customFields.validityPeriod': { $regex: escapedVal, $options: 'i' } }
+                    ]
+                });
+            } else {
+                query[field] = { $regex: val.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+            }
         }
     }
 };
@@ -135,10 +147,41 @@ const createToolInStore = async (toolData) => {
     return tool;
 };
 
+const addValidityPeriods = (existingVal, newVal) => {
+    if (newVal === undefined || newVal === null || String(newVal).trim() === '') {
+        return existingVal;
+    }
+    const newMatch = String(newVal).match(/(\d+)/);
+    if (!newMatch) {
+        return newVal;
+    }
+    const newYears = parseInt(newMatch[1], 10);
+    if (!existingVal || existingVal === 'N/A' || String(existingVal).trim() === '' || String(existingVal).trim() === '-') {
+        return String(newVal).toLowerCase().includes('year') ? newVal : `${newVal} Years`;
+    }
+    const existingMatch = String(existingVal).match(/(\d+)/);
+    if (!existingMatch) {
+        return String(newVal).toLowerCase().includes('year') ? newVal : `${newVal} Years`;
+    }
+    const existingYears = parseInt(existingMatch[1], 10);
+    const totalYears = existingYears + newYears;
+    return `${totalYears} Years`;
+};
+
 const updateToolById = async (id, toolData) => {
     const data = processToolData(toolData);
     delete data.toolId;
     delete data.qrLink;
+    if (toolData.validityPeriod !== undefined) {
+        const existingTool = await Tool.findById(id);
+        if (existingTool) {
+            const rawVal = existingTool.validityPeriod || '';
+            const existingVal = (rawVal && rawVal !== 'N/A')
+                ? rawVal
+                : (existingTool.customFields?.get?.('validation') || existingTool.customFields?.get?.('validityPeriod') || rawVal);
+            data.validityPeriod = addValidityPeriods(existingVal, toolData.validityPeriod);
+        }
+    }
     const tool = await Tool.findByIdAndUpdate(id, data, { new: true, runValidators: true });
     if (!tool) throw new Error('Tool not found');
     return tool;
@@ -189,7 +232,9 @@ const exportToolsByStoreId = async (storeId, params = {}) => {
         'job_code': t.jobCode || '',
         'job_description': t.jobDescription || '',
         'current_site': t.currentSite ? (t.currentSite.name || t.currentSite.location || '') : '',
-        'validation': t.validityPeriod || t.validation || t.customFields?.validation || '',
+        'validation': (t.validityPeriod && t.validityPeriod !== 'N/A')
+            ? t.validityPeriod
+            : (t.customFields?.validation || t.customFields?.validityPeriod || t.validityPeriod || ''),
         'ITEM_CODE': t.toolCode || '',
         'tool id creation': t.toolId || '',
         'QR LINK ': t.qrLink || ''
@@ -228,7 +273,17 @@ const getToolFilterOptions = async (storeId) => {
         ]
     };
     await Promise.all(fields.map(async (field) => {
-        const values = await Tool.distinct(field, storeQuery);
+        let values = [];
+        if (field === 'validityPeriod') {
+            const [coreVals, customValidationVals, customPeriodVals] = await Promise.all([
+                Tool.distinct('validityPeriod', storeQuery),
+                Tool.distinct('customFields.validation', storeQuery),
+                Tool.distinct('customFields.validityPeriod', storeQuery)
+            ]);
+            values = Array.from(new Set([...coreVals, ...customValidationVals, ...customPeriodVals]));
+        } else {
+            values = await Tool.distinct(field, storeQuery);
+        }
         options[field] = values
             .filter(v => v !== null && v !== undefined && String(v).trim() !== '')
             .map(String)
@@ -264,23 +319,6 @@ const bulkEditTools = async ({ storeId, toolIds, filterCriteria, updates, user }
     }
 
     const corePaths = Object.keys(Tool.schema.paths);
-    const setFields = {};
-    const setCustomFields = {};
-
-    for (const [key, value] of Object.entries(updates)) {
-        if (value === undefined || value === null || value === '') continue;
-        if (corePaths.includes(key)) {
-            setFields[key] = value;
-        } else {
-            setCustomFields[`customFields.${key}`] = value;
-        }
-    }
-
-    const updateQueryPayload = { ...setFields, ...setCustomFields };
-    if (Object.keys(updateQueryPayload).length === 0) {
-        throw new Error('No valid update values provided');
-    }
-
     const snapshots = [];
     const targetToolIds = [];
 
@@ -291,12 +329,25 @@ const bulkEditTools = async ({ storeId, toolIds, filterCriteria, updates, user }
 
         for (const [key, value] of Object.entries(updates)) {
             if (value === undefined || value === null || value === '') continue;
+
+            let finalValue = value;
+            if (key === 'validityPeriod') {
+                const rawVal = tool.validityPeriod || '';
+                const existingVal = (rawVal && rawVal !== 'N/A')
+                    ? rawVal
+                    : (tool.customFields?.get?.('validation') || tool.customFields?.get?.('validityPeriod') || rawVal);
+                finalValue = addValidityPeriods(existingVal, value);
+            }
+
             if (corePaths.includes(key)) {
                 oldValues[key] = tool[key];
-                newValues[key] = value;
+                newValues[key] = finalValue;
+                tool[key] = finalValue;
             } else {
                 oldValues[key] = tool.customFields ? tool.customFields.get(key) : undefined;
-                newValues[key] = value;
+                newValues[key] = finalValue;
+                if (!tool.customFields) tool.customFields = new Map();
+                tool.customFields.set(key, finalValue);
             }
         }
 
@@ -306,14 +357,9 @@ const bulkEditTools = async ({ storeId, toolIds, filterCriteria, updates, user }
             oldValues,
             newValues
         });
-    }
 
-    const matchedIds = toolsToUpdate.map(t => t._id);
-    await Tool.updateMany(
-        { _id: { $in: matchedIds } },
-        { $set: updateQueryPayload },
-        { runValidators: true }
-    );
+        await tool.save();
+    }
 
     const auditLog = new ToolAuditLog({
         user: {
