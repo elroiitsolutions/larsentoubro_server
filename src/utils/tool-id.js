@@ -3,17 +3,32 @@ import { Counter } from '../models/counter.model.js';
 import { Tool } from '../models/tool.model.js';
 
 /**
- * Helper to extract initials from words in a string, ignoring standalone '0' tokens.
+ * Helper to extract initials from words in a string.
+ * Rule:
+ * 1. Split string by whitespace into space-separated groups.
+ * 2. For each group: if it contains a hyphen ('-'), take only the text before the first hyphen.
+ * 3. Extract the first character of each valid group.
+ *
+ * @param {string} str
+ * @param {boolean} ignoreZero - If true, standalone '0' tokens are ignored (default: true).
+ * @returns {string}
  */
-function getWordInitials(str) {
+function getWordInitials(str, ignoreZero = true) {
     if (!str || typeof str !== 'string') return '';
     const trimmed = str.trim().toUpperCase();
     if (!trimmed) return '';
 
-    // Split by whitespace and common separators
-    const tokens = trimmed.split(/[\s,_\-\/]+/).filter(Boolean);
-    // Ignore standalone '0' tokens
-    const validTokens = tokens.filter(t => t !== '0');
+    // Split string into space-separated words/groups
+    const spaceTokens = trimmed.split(/\s+/).filter(Boolean);
+
+    // For each group, take only text before the first '-'
+    const processedTokens = spaceTokens.map(token => {
+        const beforeHyphen = token.split('-')[0];
+        return beforeHyphen.split(/[,_\/]+/).filter(Boolean);
+    }).flat();
+
+    // Filter standalone '0' tokens if ignoreZero is true
+    const validTokens = ignoreZero ? processedTokens.filter(t => t !== '0') : processedTokens;
 
     return validTokens.map(t => t[0]).join('');
 }
@@ -21,7 +36,7 @@ function getWordInitials(str) {
 class ToolIdGenerator {
     /**
      * Section 2: Description Code
-     * Generate code by taking first character of each word. Ignore standalone '0'.
+     * Take initials only from words before the first "-". Ignore "-" and everything after it.
      */
     static generateDescriptionCode(description) {
         return getWordInitials(description);
@@ -29,7 +44,7 @@ class ToolIdGenerator {
 
     /**
      * Section 3: Metal Code
-     * Generate code using word-initial logic. Ignore standalone '0'.
+     * Take initials only from words before the first "-". Ignore "-" and everything after it.
      */
     static generateMetalCode(metalType) {
         return getWordInitials(metalType);
@@ -37,15 +52,15 @@ class ToolIdGenerator {
 
     /**
      * Section 4: Tool Variant Code
-     * Generate code using word-initial logic.
+     * Take initials only from words before the first "-", preserving all digits including '0'.
      */
     static generateVariantCode(toolVariant) {
-        return getWordInitials(toolVariant);
+        return getWordInitials(toolVariant, false);
     }
 
     /**
-     * Section 5: Capacity Code
-     * Handles capacity formatting.
+     * Section 5: Capacity & Safe Working Load Code
+     * Handles capacity / safe working load formatting.
      * Distinguishes between numeric values with leading zeros (e.g. "005" -> "5")
      * and space-separated digits (e.g. "0 0 5" -> "005").
      */
@@ -65,7 +80,7 @@ class ToolIdGenerator {
             else unit = rawUnit[0];
         }
 
-        // Isolate the numeric portion (remove non-digits except spaces)
+        // Isolate the numeric portion
         const numPartRaw = str.replace(/[a-zA-Z]/g, '').trim();
 
         // Check if there are spaces between digits (e.g. "0 0 5", "0 5 0", "1 0 0")
@@ -77,19 +92,23 @@ class ToolIdGenerator {
             return `${cleanedDigits}${unit}`;
         } else {
             // Standard numeric format (e.g. "005", "05", "5", "50", "100")
-            // Parse as integer to strip unwanted leading zeros ("005" -> "5", "05" -> "5")
+            // Remove unnecessary leading zeros without removing meaningful zeros
             const cleanedDigits = numPartRaw.replace(/\s+/g, '');
             if (!cleanedDigits) return unit;
-            const parsedNum = parseInt(cleanedDigits, 10);
-            const valStr = isNaN(parsedNum) ? cleanedDigits : String(parsedNum);
-            return `${valStr}${unit}`;
+            const normalized = cleanedDigits.replace(/^0+(?=\d)/, '');
+            return `${normalized}${unit}`;
         }
     }
 
+    static generateSafeWorkingLoadCode(swl) {
+        return this.generateCapacityCode(swl);
+    }
+
+    /**
     /**
      * Section 6: Date Code
      * Converts date of supply into MMYY string.
-     * Supports Date objects, DD/MM/YYYY, YYYY-MM-DD, and Excel serial numbers.
+     * Supports Date objects, DD/MM/YYYY, YYYY-MM-DD, and Excel serial numbers (including 1/1/46165 format).
      */
     static generateDateCode(dateOfSupply) {
         if (!dateOfSupply) return '';
@@ -102,23 +121,35 @@ class ToolIdGenerator {
                 return mm + yy;
             }
 
-            const str = String(dateOfSupply).trim();
+            let str = String(dateOfSupply).trim();
             if (!str) return '';
 
-            // Handle Excel serial dates
-            if (!isNaN(Number(str)) && Number(str) > 30000 && !str.includes('/') && !str.includes('-')) {
-                const excelEpoch = new Date(1899, 11, 30);
+            // Handle Excel serial dates (raw number like "46165")
+            if (!isNaN(Number(str)) && Number(str) > 30000 && Number(str) < 100000 && !str.includes('/') && !str.includes('-')) {
+                const excelEpoch = new Date(Date.UTC(1899, 11, 30));
                 const dateObj = new Date(excelEpoch.getTime() + Number(str) * 86400000);
                 if (!isNaN(dateObj.getTime())) {
-                    const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
-                    const yy = String(dateObj.getFullYear()).slice(-2);
+                    const mm = String(dateObj.getUTCMonth() + 1).padStart(2, '0');
+                    const yy = String(dateObj.getUTCFullYear()).slice(-2);
                     return mm + yy;
                 }
             }
 
+            // Handle invalid parsed strings like "1/1/46165" where year part is Excel serial number
             if (str.includes('/')) {
                 const parts = str.split('/');
                 if (parts.length === 3) {
+                    const yearNum = Number(parts[2]);
+                    if (!isNaN(yearNum) && yearNum > 30000 && yearNum < 100000) {
+                        const excelEpoch = new Date(Date.UTC(1899, 11, 30));
+                        const dateObj = new Date(excelEpoch.getTime() + yearNum * 86400000);
+                        if (!isNaN(dateObj.getTime())) {
+                            const mm = String(dateObj.getUTCMonth() + 1).padStart(2, '0');
+                            const yy = String(dateObj.getUTCFullYear()).slice(-2);
+                            return mm + yy;
+                        }
+                    }
+
                     if (parts[0].length === 4) {
                         // YYYY/MM/DD
                         const mm = parts[1].padStart(2, '0');
@@ -149,7 +180,7 @@ class ToolIdGenerator {
             }
 
             const parsed = new Date(str);
-            if (!isNaN(parsed.getTime())) {
+            if (!isNaN(parsed.getTime()) && parsed.getFullYear() < 3000) {
                 const mm = String(parsed.getMonth() + 1).padStart(2, '0');
                 const yy = String(parsed.getFullYear()).slice(-2);
                 return mm + yy;
@@ -266,7 +297,10 @@ class ToolIdGenerator {
         const descCode = this.generateDescriptionCode(toolData.description);
         const metalCode = this.generateMetalCode(toolData.metalType);
         const variantCode = this.generateVariantCode(toolData.toolVariant);
-        const capCode = this.generateCapacityCode(toolData.capacity);
+        const capVal = (toolData.capacity !== undefined && toolData.capacity !== null && String(toolData.capacity).trim() !== '')
+            ? toolData.capacity
+            : toolData.safeWorkingLoad;
+        const capCode = this.generateCapacityCode(capVal);
         const dateCode = this.generateDateCode(toolData.dateOfSupply);
         const purchaserCode = this.generatePurchaserCode(toolData.purchaserName);
 
@@ -285,7 +319,10 @@ class ToolIdGenerator {
         const descCode = this.generateDescriptionCode(toolData.description);
         const metalCode = this.generateMetalCode(toolData.metalType);
         const variantCode = this.generateVariantCode(toolData.toolVariant);
-        const capCode = this.generateCapacityCode(toolData.capacity);
+        const capVal = (toolData.capacity !== undefined && toolData.capacity !== null && String(toolData.capacity).trim() !== '')
+            ? toolData.capacity
+            : toolData.safeWorkingLoad;
+        const capCode = this.generateCapacityCode(capVal);
         const dateCode = this.generateDateCode(toolData.dateOfSupply);
         const purchaserCode = this.generatePurchaserCode(toolData.purchaserName);
         const serialStr = this.formatSerial(serialNum);

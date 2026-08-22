@@ -26,6 +26,51 @@ const downloadStoreToolsSample = async (req, res, next) => {
     }
 };
 
+const formatImportDateValue = (val) => {
+    if (val === undefined || val === null) return '';
+    if (val instanceof Date) {
+        if (isNaN(val.getTime())) return '';
+        const mm = String(val.getMonth() + 1).padStart(2, '0');
+        const dd = String(val.getDate()).padStart(2, '0');
+        const yyyy = val.getFullYear();
+        return `${mm}/${dd}/${yyyy}`;
+    }
+    const str = String(val).trim();
+    if (!str) return '';
+
+    // Handle raw Excel serial date number like 46165
+    if (!isNaN(Number(str)) && Number(str) > 30000 && Number(str) < 100000 && !str.includes('/') && !str.includes('-')) {
+        const excelEpoch = new Date(Date.UTC(1899, 11, 30));
+        const dateObj = new Date(excelEpoch.getTime() + Number(str) * 86400000);
+        if (!isNaN(dateObj.getTime())) {
+            const mm = String(dateObj.getUTCMonth() + 1).padStart(2, '0');
+            const dd = String(dateObj.getUTCDate()).padStart(2, '0');
+            const yyyy = dateObj.getUTCFullYear();
+            return `${mm}/${dd}/${yyyy}`;
+        }
+    }
+
+    // Handle invalid parsed string formats like 1/1/46165
+    if (str.includes('/')) {
+        const parts = str.split('/');
+        if (parts.length === 3) {
+            const yearNum = Number(parts[2]);
+            if (!isNaN(yearNum) && yearNum > 30000 && yearNum < 100000) {
+                const excelEpoch = new Date(Date.UTC(1899, 11, 30));
+                const dateObj = new Date(excelEpoch.getTime() + yearNum * 86400000);
+                if (!isNaN(dateObj.getTime())) {
+                    const mm = String(dateObj.getUTCMonth() + 1).padStart(2, '0');
+                    const dd = String(dateObj.getUTCDate()).padStart(2, '0');
+                    const yyyy = dateObj.getUTCFullYear();
+                    return `${mm}/${dd}/${yyyy}`;
+                }
+            }
+        }
+    }
+
+    return str;
+};
+
 /**
  * PREVIEW: Parse xlsx, validate rows, store in ImportJob, return summary + first page.
  * Records are now stored server-side — the client never holds 100K records in memory.
@@ -43,10 +88,10 @@ const previewStoreToolsImport = async (req, res, next) => {
             return res.status(400).json({ success: false, message: 'No file uploaded' });
         }
 
-        const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
+        const workbook = xlsx.read(req.file.buffer, { type: 'buffer', cellDates: true, cellNF: false, cellText: false });
         const sheetName = workbook.SheetNames[0];
         const sheet = workbook.Sheets[sheetName];
-        const rows = xlsx.utils.sheet_to_json(sheet);
+        const rows = xlsx.utils.sheet_to_json(sheet, { raw: false, dateNF: 'mm/dd/yyyy' });
 
         const form = await FormDefinition.findOne({ slug: 'tool-form', isActive: true });
         const formFields = form ? form.fields : [];
@@ -109,7 +154,12 @@ const previewStoreToolsImport = async (req, res, next) => {
                 }
 
                 if (val !== undefined && val !== null) {
-                    const stringVal = String(val).trim();
+                    let stringVal = String(val).trim();
+                    const isDateField = colDef.type === 'date' || colDef.name === 'dateOfSupply' || colDef.name.toLowerCase().includes('date');
+                    if (isDateField) {
+                        stringVal = formatImportDateValue(val);
+                    }
+
                     if (coreKeys.includes(colDef.name)) {
                         toolData[colDef.name] = stringVal;
                     } else {
