@@ -1,293 +1,194 @@
-import { Challan } from '../models/challan.model.js';
-import { MissingTool } from '../models/missingTool.model.js';
-import { ToolMovement } from '../models/toolMovement.model.js';
-import { ChallanAuditLog } from '../models/challanAuditLog.model.js';
-import * as XLSX from 'xlsx';
+import { Tool } from '../models/tool.model.js';
+import ExcelJS from 'exceljs';
 
-const applyDateRange = (query, field, startDate, endDate) => {
+/**
+ * Helper to apply date range filter
+ */
+const applyDateRange = (query, dateField, startDate, endDate) => {
     if (startDate || endDate) {
-        query[field] = {};
-        if (startDate) query[field].$gte = new Date(startDate);
+        query[dateField] = {};
+        if (startDate) query[dateField].$gte = new Date(startDate);
         if (endDate) {
             const end = new Date(endDate);
             end.setHours(23, 59, 59, 999);
-            query[field].$lte = end;
+            query[dateField].$lte = end;
         }
     }
 };
 
-export const getDeliveryChallanReport = async (params = {}) => {
+/**
+ * Helper to apply status filter handling 'Moving' state
+ */
+const applyStatusFilter = (query, status) => {
+    if (status && status !== 'All') {
+        if (status === 'Moving') {
+            query.status = { $in: ['Moving', 'Issued', 'In Transit'] };
+        } else {
+            query.status = status;
+        }
+    }
+};
+
+/**
+ * 1. Tools Report (Inventory & Inspection Compliance)
+ */
+export const getToolsReport = async (params = {}) => {
     const {
         page = 1,
         limit = 50,
+        project = 'All',
+        store = 'All',
         vendor = 'All',
         status = 'All',
-        challanNumber = '',
+        toolType = 'All',
+        inspectionStatus = 'All',
         startDate,
-        endDate
-    } = params;
-
-    const query = { challanType: 'Delivery' };
-
-    if (vendor && vendor !== 'All') query['vendor._id'] = vendor;
-    if (status && status !== 'All') query.status = status;
-    if (challanNumber) query.challanNumber = { $regex: challanNumber, $options: 'i' };
-    applyDateRange(query, 'challanDate', startDate, endDate);
-
-    const skip = (Number(page) - 1) * Number(limit);
-    const [data, total] = await Promise.all([
-        Challan.find(query).sort({ challanDate: -1 }).skip(skip).limit(Number(limit)).lean(),
-        Challan.countDocuments(query)
-    ]);
-
-    return {
-        data,
-        total,
-        page: Number(page),
-        limit: Number(limit),
-        totalPages: Math.ceil(total / Number(limit))
-    };
-};
-
-export const getReturnChallanReport = async (params = {}) => {
-    const {
-        page = 1,
-        limit = 50,
-        vendor = 'All',
-        status = 'All',
-        challanNumber = '',
-        startDate,
-        endDate
-    } = params;
-
-    const query = { challanType: 'Return' };
-
-    if (vendor && vendor !== 'All') query['vendor._id'] = vendor;
-    if (status && status !== 'All') query.status = status;
-    if (challanNumber) query.challanNumber = { $regex: challanNumber, $options: 'i' };
-    applyDateRange(query, 'challanDate', startDate, endDate);
-
-    const skip = (Number(page) - 1) * Number(limit);
-    const [data, total] = await Promise.all([
-        Challan.find(query).sort({ challanDate: -1 }).skip(skip).limit(Number(limit)).lean(),
-        Challan.countDocuments(query)
-    ]);
-
-    return {
-        data,
-        total,
-        page: Number(page),
-        limit: Number(limit),
-        totalPages: Math.ceil(total / Number(limit))
-    };
-};
-
-export const getMissingToolsReport = async (params = {}) => {
-    const {
-        page = 1,
-        limit = 50,
-        vendor = 'All',
-        toolName = '',
-        challanNumber = '',
-        startDate,
-        endDate
+        endDate,
+        search = '',
+        sortBy = 'createdAt',
+        sortOrder = 'desc'
     } = params;
 
     const query = {};
 
-    if (vendor && vendor !== 'All') query.vendor = vendor;
-    if (toolName) {
+    if (project && project !== 'All') query.project = project;
+    if (store && store !== 'All') query.currentSite = store;
+    if (vendor && vendor !== 'All') {
         query.$or = [
-            { description: { $regex: toolName, $options: 'i' } },
-            { toolIdStr: { $regex: toolName, $options: 'i' } },
-            { toolCode: { $regex: toolName, $options: 'i' } }
+            { supplierCode: vendor },
+            { purchaserName: vendor }
         ];
     }
-    if (challanNumber) {
+    applyStatusFilter(query, status);
+    if (toolType && toolType !== 'All') query.toolType = toolType;
+    if (inspectionStatus && inspectionStatus !== 'All') query.inspectionStatus = inspectionStatus;
+    applyDateRange(query, 'createdAt', startDate, endDate);
+
+    if (search) {
         query.$or = [
-            { dcNumber: { $regex: challanNumber, $options: 'i' } },
-            { rcNumber: { $regex: challanNumber, $options: 'i' } }
+            { toolId: { $regex: search, $options: 'i' } },
+            { description: { $regex: search, $options: 'i' } },
+            { toolCode: { $regex: search, $options: 'i' } },
+            { subcontractorName: { $regex: search, $options: 'i' } },
+            { purchaserName: { $regex: search, $options: 'i' } }
         ];
     }
-    applyDateRange(query, 'missingDate', startDate, endDate);
+
+    const sortDir = sortOrder === 'asc' ? 1 : -1;
+    let sortObj = { [sortBy]: sortDir };
+    if (sortBy === 'toolId' || sortBy === 'serialNumber') {
+        sortObj = { serialNumber: sortDir, toolId: sortDir };
+    }
 
     const skip = (Number(page) - 1) * Number(limit);
-    const [data, total] = await Promise.all([
-        MissingTool.find(query).sort({ missingDate: -1 }).skip(skip).limit(Number(limit)).lean(),
-        MissingTool.countDocuments(query)
+
+    const [data, total, summaryAgg] = await Promise.all([
+        Tool.find(query)
+            .populate('project', 'name projectCode')
+            .populate('currentSite', 'name type')
+            .sort(sortObj)
+            .skip(skip)
+            .limit(Number(limit))
+            .lean(),
+        Tool.countDocuments(query),
+        Tool.aggregate([
+            { $match: query },
+            {
+                $group: {
+                    _id: null,
+                    totalTools: { $sum: 1 },
+                    availableCount: {
+                        $sum: { $cond: [{ $eq: ['$status', 'Available'] }, 1, 0] }
+                    },
+                    issuedCount: {
+                        $sum: { $cond: [{ $in: ['$status', ['Issued', 'In Transit', 'Moving']] }, 1, 0] }
+                    },
+                    overdueCount: {
+                        $sum: {
+                            $cond: [
+                                {
+                                    $and: [
+                                        { $ifNull: ['$nextInspectionDueDate', false] },
+                                        { $lt: ['$nextInspectionDueDate', new Date()] }
+                                    ]
+                                },
+                                1,
+                                0
+                            ]
+                        }
+                    }
+                }
+            }
+        ])
     ]);
+
+    const summary = summaryAgg[0] || {
+        totalTools: total,
+        availableCount: 0,
+        issuedCount: 0,
+        overdueCount: 0
+    };
 
     return {
         data,
         total,
         page: Number(page),
         limit: Number(limit),
-        totalPages: Math.ceil(total / Number(limit))
+        totalPages: Math.ceil(total / Number(limit)),
+        summary
     };
 };
 
-export const getToolMovementReport = async (params = {}) => {
-    const {
-        page = 1,
-        limit = 50,
-        toolName = '',
-        challanNumber = '',
-        movementType = 'All',
-        startDate,
-        endDate
-    } = params;
+/**
+ * Generates Excel/CSV Export Buffers for Tools Report
+ */
+export const generateReportExportBuffer = async (reportType = 'tools', format = 'excel', params = {}) => {
+    const res = await getToolsReport({ ...params, page: 1, limit: 10000 });
+    const reportData = res.data || [];
 
-    const query = {};
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Tools Report');
 
-    if (movementType && movementType !== 'All') query.movementType = movementType;
-    if (toolName) {
-        query.$or = [
-            { description: { $regex: toolName, $options: 'i' } },
-            { toolIdStr: { $regex: toolName, $options: 'i' } }
-        ];
-    }
-    if (challanNumber) query.referenceNumber = { $regex: challanNumber, $options: 'i' };
-    applyDateRange(query, 'date', startDate, endDate);
+    sheet.columns = [
+        { header: 'Tool ID', key: 'toolId', width: 22 },
+        { header: 'Description', key: 'description', width: 35 },
+        { header: 'Category', key: 'toolType', width: 20 },
+        { header: 'Project', key: 'project', width: 25 },
+        { header: 'Current Store', key: 'currentSite', width: 25 },
+        { header: 'Vendor', key: 'vendor', width: 25 },
+        { header: 'Status', key: 'status', width: 15 },
+        { header: 'Subcontractor', key: 'subcontractorName', width: 25 },
+        { header: 'Inspection Status', key: 'inspectionStatus', width: 20 },
+        { header: 'Inspection Due Date', key: 'nextInspectionDueDate', width: 20 }
+    ];
 
-    const skip = (Number(page) - 1) * Number(limit);
-    const [data, total] = await Promise.all([
-        ToolMovement.find(query).sort({ date: -1 }).skip(skip).limit(Number(limit)).lean(),
-        ToolMovement.countDocuments(query)
-    ]);
-
-    return {
-        data,
-        total,
-        page: Number(page),
-        limit: Number(limit),
-        totalPages: Math.ceil(total / Number(limit))
-    };
-};
-
-export const getAuditLogsReport = async (params = {}) => {
-    const {
-        page = 1,
-        limit = 50,
-        action = 'All',
-        referenceNumber = '',
-        startDate,
-        endDate
-    } = params;
-
-    const query = {};
-
-    if (action && action !== 'All') query.action = action;
-    if (referenceNumber) query.referenceNumber = { $regex: referenceNumber, $options: 'i' };
-    applyDateRange(query, 'dateTime', startDate, endDate);
-
-    const skip = (Number(page) - 1) * Number(limit);
-    const [data, total] = await Promise.all([
-        ChallanAuditLog.find(query).sort({ dateTime: -1 }).skip(skip).limit(Number(limit)).lean(),
-        ChallanAuditLog.countDocuments(query)
-    ]);
-
-    return {
-        data,
-        total,
-        page: Number(page),
-        limit: Number(limit),
-        totalPages: Math.ceil(total / Number(limit))
-    };
-};
-
-export const generateReportExportBuffer = async (reportType, params, exportFormat = 'excel') => {
-    let records = [];
-    let headers = [];
-    let rows = [];
-
-    const exportParams = { ...params, page: 1, limit: 5000 };
-
-    switch (reportType) {
-        case 'delivery': {
-            const result = await getDeliveryChallanReport(exportParams);
-            records = result.data;
-            headers = ['DC Number', 'Vendor Name', 'Tool Count', 'Date', 'Status', 'Created By'];
-            rows = records.map(r => [
-                r.challanNumber,
-                r.vendor?.name || '-',
-                r.toolCount || 0,
-                new Date(r.challanDate).toLocaleDateString(),
-                r.status,
-                r.createdBy?.name || '-'
-            ]);
-            break;
-        }
-        case 'return': {
-            const result = await getReturnChallanReport(exportParams);
-            records = result.data;
-            headers = ['RC Number', 'Reference DC', 'Vendor Name', 'Returned Count', 'Missing Count', 'Date', 'Created By'];
-            rows = records.map(r => [
-                r.challanNumber,
-                r.referenceDcNumber || '-',
-                r.vendor?.name || '-',
-                r.returnedCount || 0,
-                r.missingCount || 0,
-                new Date(r.challanDate).toLocaleDateString(),
-                r.createdBy?.name || '-'
-            ]);
-            break;
-        }
-        case 'missing': {
-            const result = await getMissingToolsReport(exportParams);
-            records = result.data;
-            headers = ['Tool ID', 'Tool Name', 'Tool Code', 'Vendor', 'DC Number', 'RC Number', 'Missing Date', 'Reported By'];
-            rows = records.map(r => [
-                r.toolIdStr,
-                r.description || '-',
-                r.toolCode || '-',
-                r.vendorName || '-',
-                r.dcNumber || '-',
-                r.rcNumber || '-',
-                new Date(r.missingDate).toLocaleDateString(),
-                r.reportedBy || '-'
-            ]);
-            break;
-        }
-        case 'movement': {
-            const result = await getToolMovementReport(exportParams);
-            records = result.data;
-            headers = ['Date', 'Tool ID', 'Description', 'Movement Type', 'From', 'To', 'Reference No', 'User'];
-            rows = records.map(r => [
-                new Date(r.date).toLocaleString(),
-                r.toolIdStr,
-                r.description || '-',
-                r.movementType,
-                r.from,
-                r.to,
-                r.referenceNumber,
-                r.user
-            ]);
-            break;
-        }
-        case 'audit': {
-            const result = await getAuditLogsReport(exportParams);
-            records = result.data;
-            headers = ['Date Time', 'Action', 'Reference Number', 'User', 'Details'];
-            rows = records.map(r => [
-                new Date(r.dateTime).toLocaleString(),
-                r.action,
-                r.referenceNumber,
-                r.user?.name || '-',
-                r.details || '-'
-            ]);
-            break;
-        }
-        default:
-            throw new Error('Unknown report type');
-    }
-
-    const wsData = [headers, ...rows];
-    const ws = XLSX.utils.aoa_to_sheet(wsData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Report');
-
-    return XLSX.write(wb, {
-        type: 'buffer',
-        bookType: exportFormat === 'csv' ? 'csv' : 'xlsx'
+    reportData.forEach(r => {
+        sheet.addRow({
+            toolId: r.toolId,
+            description: r.description,
+            toolType: r.toolType || r.toolVariant || 'General',
+            project: r.project?.name || 'Unassigned',
+            currentSite: r.currentSite?.name || 'Central Store',
+            vendor: r.purchaserName || r.supplierCode || 'N/A',
+            status: r.status || 'Available',
+            subcontractorName: r.subcontractorName || '-',
+            inspectionStatus: r.inspectionStatus || 'Pending',
+            nextInspectionDueDate: r.nextInspectionDueDate ? new Date(r.nextInspectionDueDate).toLocaleDateString() : '-'
+        });
     });
+
+    sheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFF' } };
+    sheet.getRow(1).fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: '1F2937' }
+    };
+
+    if (format === 'csv') {
+        const csvBuffer = await workbook.csv.writeBuffer();
+        return csvBuffer;
+    } else {
+        const excelBuffer = await workbook.xlsx.writeBuffer();
+        return excelBuffer;
+    }
 };

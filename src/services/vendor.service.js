@@ -7,8 +7,8 @@ export const getVendors = async (params = {}) => {
     // Remove any previously seeded mock vendors from the Vendor collection so they never appear
     await Vendor.deleteMany({ vendorCode: { $in: ['V-LNT01', 'V-ALP02', 'V-BLD03'] } }).catch(() => {});
 
-    // Query ONLY users whose role is exactly 'Vendor' from User table
     const userQuery = { role: 'Vendor' };
+    const vendorQuery = {};
 
     if (search) {
         userQuery.$or = [
@@ -17,17 +17,21 @@ export const getVendors = async (params = {}) => {
             { email: { $regex: search, $options: 'i' } },
             { phonenumber: { $regex: search, $options: 'i' } }
         ];
+        vendorQuery.$or = [
+            { name: { $regex: search, $options: 'i' } },
+            { vendorCode: { $regex: search, $options: 'i' } },
+            { contactEmail: { $regex: search, $options: 'i' } },
+            { contactPhone: { $regex: search, $options: 'i' } }
+        ];
     }
 
-    const skip = (Number(page) - 1) * Number(limit);
-    const [vendorUsers, total] = await Promise.all([
-        User.find(userQuery).sort({ name: 1 }).skip(skip).limit(Number(limit)).lean(),
-        User.countDocuments(userQuery)
+    const [vendorUsers, dbVendors] = await Promise.all([
+        User.find(userQuery).lean(),
+        Vendor.find(vendorQuery).lean()
     ]);
 
-    // Map User documents with role='Vendor' to standard VendorRecord structure
-    const mappedVendors = vendorUsers.map(u => ({
-        _id: u._id,
+    const mappedUsers = vendorUsers.map(u => ({
+        _id: u._id.toString(),
         name: u.name || 'Vendor User',
         vendorCode: u.user_id || `V-${u._id.toString().substring(0, 6).toUpperCase()}`,
         address: u.address || 'Powai Campus, Saki Vihar Road, Mumbai',
@@ -39,8 +43,33 @@ export const getVendors = async (params = {}) => {
         metrics: { dcCount: 0, rcCount: 0, returnedCount: 0, missingCount: 0 }
     }));
 
+    const mappedDbVendors = dbVendors.map(v => ({
+        _id: v._id.toString(),
+        name: v.name || 'Vendor',
+        vendorCode: v.vendorCode || `V-${v._id.toString().substring(0, 6).toUpperCase()}`,
+        address: v.address || '',
+        contactPerson: v.contactPerson || v.name,
+        contactPhone: v.contactPhone || '',
+        contactEmail: v.contactEmail || '',
+        gstNumber: v.gstNumber || '',
+        status: v.status || 'Active',
+        metrics: v.metrics || { dcCount: 0, rcCount: 0, returnedCount: 0, missingCount: 0 }
+    }));
+
+    const combinedMap = new Map();
+    [...mappedUsers, ...mappedDbVendors].forEach(v => {
+        if (v && v._id) {
+            combinedMap.set(v._id, v);
+        }
+    });
+    const combined = Array.from(combinedMap.values());
+
+    const total = combined.length;
+    const skip = (Number(page) - 1) * Number(limit);
+    const paginated = combined.slice(skip, skip + Number(limit));
+
     return {
-        data: mappedVendors,
+        data: paginated,
         total,
         page: Number(page),
         limit: Number(limit),

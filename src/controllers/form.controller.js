@@ -56,29 +56,31 @@ const generateZodSchema = (fields) => {
 
 export const createForm = async (req, res, next) => {
   try {
-    const { name, slug, description, fields } = req.body;
+    const { name, slug, description, fields = [] } = req.body;
     
-    let form = await FormDefinition.findOne({ slug });
-    if (form) {
-      form.name = name;
-      form.description = description;
-      form.fields = fields;
-      form.version = (form.version || 1) + 1;
-      form.isActive = true;
-      await form.save();
-    } else {
-      form = new FormDefinition({
-        name,
-        slug,
-        description,
-        fields,
-        version: 1,
-        isActive: true,
-      });
-      await form.save();
-    }
+    // Ensure every field has a valid name, label, id, and sequential order
+    const sanitizedFields = (fields || []).map((f, idx) => ({
+      ...f,
+      order: idx,
+      name: (f.name && f.name.trim()) || (f.label && f.label.toLowerCase().replace(/[^a-z0-9_]/gi, '_')) || `field_${idx}`,
+      label: (f.label && f.label.trim()) || `Field ${idx + 1}`
+    }));
 
-    res.status(201).json({ success: true, data: form });
+    const form = await FormDefinition.findOneAndUpdate(
+      { slug },
+      {
+        $set: {
+          name,
+          description,
+          fields: sanitizedFields,
+          isActive: true
+        },
+        $inc: { version: 1 }
+      },
+      { new: true, upsert: true, runValidators: true }
+    );
+
+    res.status(200).json({ success: true, data: form });
   } catch (error) {
     next(error);
   }
