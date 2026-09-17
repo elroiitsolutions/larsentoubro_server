@@ -1,4 +1,5 @@
 import { projectService } from '../services/project.service.js';
+import { getVendorAssignedScope } from '../utils/vendorScope.js';
 
 export const createProject = async (req, res, next) => {
     try {
@@ -15,7 +16,10 @@ export const createProject = async (req, res, next) => {
 export const getProjects = async (req, res, next) => {
     try {
         let filter = {};
-        if (req.user && req.user.role !== 'Admin') {
+        if (req.user && req.user.role === 'Vendor') {
+            const scope = await getVendorAssignedScope(req.user);
+            filter._id = { $in: scope.assignedProjectObjectIds };
+        } else if (req.user && req.user.role !== 'Admin') {
             const assignedProjectIds = (req.user.projects || []).map(p => (p._id || p).toString());
             filter._id = { $in: assignedProjectIds };
         }
@@ -28,7 +32,12 @@ export const getProjects = async (req, res, next) => {
 
 export const getProjectById = async (req, res, next) => {
     try {
-        if (req.user && req.user.role !== 'Admin') {
+        if (req.user && req.user.role === 'Vendor') {
+            const scope = await getVendorAssignedScope(req.user);
+            if (!scope.assignedProjectIds.includes(req.params.id.toString())) {
+                return res.status(403).json({ success: false, message: 'Access denied. You do not have Delivery Challan assignments for this project.' });
+            }
+        } else if (req.user && req.user.role !== 'Admin') {
             const assignedProjectIds = (req.user.projects || []).map(p => (p._id || p).toString());
             if (!assignedProjectIds.includes(req.params.id.toString())) {
                 return res.status(403).json({ success: false, message: 'Access denied. You are not assigned to this project.' });

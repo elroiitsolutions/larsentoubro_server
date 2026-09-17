@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env.js';
 import { User } from '../models/user.model.js';
+import { Vendor } from '../models/vendor.model.js';
 
 export const attachUser = async (req, res, next) => {
     try {
@@ -12,10 +13,35 @@ export const attachUser = async (req, res, next) => {
 
         if (token) {
             const decoded = jwt.verify(token, env.JWT_SECRET);
-            const user = await User.findById(decoded.id)
+            let user = await User.findById(decoded.id)
                 .populate('projects', 'name code location')
                 .populate('stores', 'name code siteName')
                 .select('-password');
+
+            if (!user && (decoded.role === 'Vendor' || decoded.isVendor)) {
+                const vendor = await Vendor.findById(decoded.id)
+                    .populate('projects', 'name code location')
+                    .populate('stores', 'name code siteName')
+                    .select('-password');
+                if (vendor) {
+                    user = {
+                        _id: vendor._id,
+                        id: vendor._id.toString(),
+                        name: vendor.name,
+                        email: vendor.contactEmail || vendor.email || '',
+                        phonenumber: vendor.contactPhone || '',
+                        role: 'Vendor',
+                        isVendor: true,
+                        vendorCode: vendor.vendorCode,
+                        contactPerson: vendor.contactPerson,
+                        gstNumber: vendor.gstNumber,
+                        allowedPages: vendor.allowedPages || ['/projects', '/stores', '/tools'],
+                        projects: vendor.projects || [],
+                        stores: vendor.stores || []
+                    };
+                }
+            }
+
             if (user) {
                 req.user = user;
             }
@@ -50,10 +76,34 @@ export const authenticate = async (req, res, next) => {
         }
 
         const decoded = jwt.verify(token, env.JWT_SECRET);
-        const user = await User.findById(decoded.id)
+        let user = await User.findById(decoded.id)
             .populate('projects', 'name code location')
             .populate('stores', 'name code siteName')
             .select('-password');
+
+        if (!user && (decoded.role === 'Vendor' || decoded.isVendor)) {
+            const vendor = await Vendor.findById(decoded.id)
+                .populate('projects', 'name code location')
+                .populate('stores', 'name code siteName')
+                .select('-password');
+            if (vendor) {
+                user = {
+                    _id: vendor._id,
+                    id: vendor._id.toString(),
+                    name: vendor.name,
+                    email: vendor.contactEmail || vendor.email || '',
+                    phonenumber: vendor.contactPhone || '',
+                    role: 'Vendor',
+                    isVendor: true,
+                    vendorCode: vendor.vendorCode,
+                    contactPerson: vendor.contactPerson,
+                    gstNumber: vendor.gstNumber,
+                    allowedPages: vendor.allowedPages || ['/projects', '/stores', '/tools'],
+                    projects: vendor.projects || [],
+                    stores: vendor.stores || []
+                };
+            }
+        }
 
         if (!user) {
             return res.status(401).json({
@@ -91,14 +141,14 @@ export const requirePagePermission = (pagePrefix) => {
         if (req.user.role === 'Admin') {
             return next();
         }
-        // Vendor users only have access to tool issue and return operations (/stores, /tools)
+        // Vendor users have access to assigned Projects, Stores, and Tools (/projects, /stores, /tools)
         if (req.user.role === 'Vendor') {
-            if (pagePrefix === "/stores" || pagePrefix === "/tools") {
+            if (pagePrefix === "/projects" || pagePrefix === "/stores" || pagePrefix === "/tools") {
                 return next();
             }
             return res.status(403).json({
                 success: false,
-                message: "Access denied. Vendors only have access to tool issue and return operations."
+                message: "Access denied. Vendor access is restricted to assigned Delivery Challan modules."
             });
         }
         // Normal users must have the pagePrefix in their allowedPages array

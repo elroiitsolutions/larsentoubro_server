@@ -4,14 +4,16 @@ import { env } from '../config/env.js';
 import { LoginRequest } from '../models/loginRequest.model.js';
 import { AuditLog } from '../models/auditLog.model.js';
 import { realtimeService } from '../services/socket.service.js';
+import { Vendor } from '../models/vendor.model.js';
 
 const generateUserToken = (user) => {
     return jwt.sign(
         { 
             id: user._id, 
-            email: user.email, 
-            role: user.role, 
+            email: user.email || user.contactEmail, 
+            role: user.role || 'User', 
             name: user.name,
+            isVendor: user.isVendor || false,
             projects: user.projects,
             stores: user.stores
         },
@@ -84,6 +86,32 @@ const deleteUser = async (req, res, next) => {
 
 const getCurrentUser = async (req, res, next) => {
     try {
+        if (req.user && (req.user.isVendor || req.user.role === 'Vendor')) {
+            const vendor = await Vendor.findById(req.user._id)
+                .populate('projects', 'name code location')
+                .populate('stores', 'name code siteName')
+                .select('-password');
+            if (vendor) {
+                return res.status(200).json({
+                    success: true,
+                    data: {
+                        _id: vendor._id,
+                        id: vendor._id.toString(),
+                        name: vendor.name,
+                        email: vendor.contactEmail,
+                        phonenumber: vendor.contactPhone,
+                        role: 'Vendor',
+                        isVendor: true,
+                        vendorCode: vendor.vendorCode,
+                        contactPerson: vendor.contactPerson,
+                        gstNumber: vendor.gstNumber,
+                        allowedPages: vendor.allowedPages || ['/projects', '/stores', '/tools'],
+                        projects: vendor.projects || [],
+                        stores: vendor.stores || []
+                    }
+                });
+            }
+        }
         const user = await userService.getUserById(req.user._id);
         if (!user) {
             return res.status(404).json({ success: false, message: 'User session expired' });
@@ -94,13 +122,58 @@ const getCurrentUser = async (req, res, next) => {
     }
 };
 
-// User Login Request flow
+// User & Vendor Login Flow
 const loginUser = async (req, res, next) => {
     try {
         const { email, password } = req.body;
+        const normalizedEmail = (email || '').trim().toLowerCase();
 
-        const user = await userService.getUserByEmail(email);
+        // 1. First check User collection for internal team members
+        const user = await userService.getUserByEmail(normalizedEmail);
         if (!user) {
+            // 2. Fallback check Vendor collection for Vendor logins
+            const vendor = await Vendor.findOne({
+                $or: [
+                    { contactEmail: normalizedEmail },
+                    { email: normalizedEmail }
+                ]
+            });
+
+            if (vendor) {
+                if (vendor.status === 'Inactive') {
+                    return res.status(403).json({ success: false, message: 'Vendor account is inactive. Please contact administrator.' });
+                }
+                const isVendorMatch = await vendor.comparePassword(password);
+                if (!isVendorMatch) {
+                    return res.status(401).json({ success: false, message: 'Invalid email or password' });
+                }
+
+                const token = generateUserToken({
+                    _id: vendor._id,
+                    email: vendor.contactEmail,
+                    role: 'Vendor',
+                    name: vendor.name,
+                    isVendor: true
+                });
+
+                const vendorObj = {
+                    _id: vendor._id,
+                    name: vendor.name,
+                    email: vendor.contactEmail,
+                    role: 'Vendor',
+                    isVendor: true,
+                    vendorCode: vendor.vendorCode,
+                    contactPerson: vendor.contactPerson,
+                    allowedPages: ['/projects', '/stores', '/tools']
+                };
+
+                return res.status(200).json({
+                    success: true,
+                    token,
+                    user: vendorObj
+                });
+            }
+
             return res.status(401).json({ success: false, message: 'Invalid email or password' });
         }
 

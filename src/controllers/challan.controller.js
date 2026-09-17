@@ -20,7 +20,11 @@ export const createReturnChallan = async (req, res, next) => {
 
 export const getChallans = async (req, res, next) => {
     try {
-        const result = await challanService.getChallans(req.query);
+        const queryParams = { ...req.query };
+        if (req.user && req.user.role === 'Vendor') {
+            queryParams.vendor = req.user._id ? req.user._id.toString() : (req.user.vendorCode || req.user.email);
+        }
+        const result = await challanService.getChallans(queryParams);
         res.status(200).json({ success: true, ...result });
     } catch (error) {
         next(error);

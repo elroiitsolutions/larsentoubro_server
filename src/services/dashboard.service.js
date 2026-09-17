@@ -18,7 +18,7 @@ export const getDashboardStats = async (filters = {}) => {
     } = filters;
 
     // Build Tool query
-    const query = {};
+    const query = { isDeleted: { $ne: true } };
 
     if (division && division !== 'All') {
         query.division = division;
