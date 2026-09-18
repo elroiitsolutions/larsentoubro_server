@@ -22,8 +22,40 @@ export const generateChallanNumber = async (type, session = null) => {
     const counterId = `challan_${type.toLowerCase()}_${fullYear}`;
     const prefix = type === 'Delivery' ? 'DC' : 'RC';
 
+    // Self-healing: Find maximum existing serial number for this type and year in database
+    const regex = new RegExp(`^${prefix}-${shortYear}-(\\d+)$`, 'i');
+    const queryOptions = session ? { session } : {};
+    const existingChallans = await Challan.find(
+        { challanType: type, challanNumber: { $regex: regex } },
+        { challanNumber: 1 },
+        queryOptions
+    ).lean();
+
+    let maxSeq = 0;
+    for (const c of existingChallans) {
+        if (c.challanNumber) {
+            const match = c.challanNumber.match(regex);
+            if (match && match[1]) {
+                const seqNum = parseInt(match[1], 10);
+                if (!isNaN(seqNum) && seqNum > maxSeq) {
+                    maxSeq = seqNum;
+                }
+            }
+        }
+    }
+
     const options = { new: true, upsert: true };
     if (session) options.session = session;
+
+    // If counter is missing or out of sync (higher than actual maxSeq in DB), reset counter to maxSeq
+    const currentCounter = await Counter.findById(counterId, null, queryOptions);
+    if (!currentCounter || currentCounter.seq > maxSeq) {
+        await Counter.findByIdAndUpdate(
+            counterId,
+            { seq: maxSeq },
+            options
+        );
+    }
 
     const counter = await Counter.findByIdAndUpdate(
         counterId,
@@ -331,11 +363,6 @@ export const createScrapDeliveryChallan = async (data, user = {}) => {
                     isScrapped: true,
                     scrappedAt: new Date(),
                     scrappedBy: createdBy,
-                    scrapDealer: {
-                        _id: scrapDealerSnapshot._id,
-                        name: scrapDealerSnapshot.name,
-                        code: scrapDealerSnapshot.vendorCode
-                    },
                     scrapReason: remarks || notes || `Dispatched to Scrap Dealer: ${scrapDealerSnapshot.name}`
                 }
             },
