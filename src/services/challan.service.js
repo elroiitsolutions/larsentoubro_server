@@ -7,6 +7,7 @@ import { MissingTool } from '../models/missingTool.model.js';
 import { ChallanAuditLog } from '../models/challanAuditLog.model.js';
 import { Vendor } from '../models/vendor.model.js';
 import * as vendorService from './vendor.service.js';
+import * as profileService from './profile.service.js';
 
 /**
  * Helper to generate sequential Challan numbers like DC-26-001 or RC-26-001
@@ -199,6 +200,177 @@ export const createDeliveryChallan = async (data, user = {}) => {
 
         // Update vendor metrics
         await vendorService.updateVendorMetrics(vendorId, { dcDelta: 1 }, session);
+
+        return challan;
+    });
+};
+
+/**
+ * Create Scrap Delivery Challan (DC) for transferring tools to a Scrap Dealer
+ */
+export const createScrapDeliveryChallan = async (data, user = {}) => {
+    const {
+        scrapDealerId,
+        storeId,
+        siteCode = '',
+        locationChainage = '',
+        workFrontLocation = '',
+        trnCode = '',
+        sendingCentreCode = '',
+        mrNo = '',
+        mrDate = '',
+        stockType = '',
+        ewayBillNo = '',
+        gatePassNo = '',
+        gatePassApprovedBy = '',
+        consignorTaxNo = '',
+        vehicleNo = '',
+        lrNo = '',
+        freightStatus = '',
+        receiverName = '',
+        receiverMobile = '',
+        mrnNo = '',
+        receiptDate = '',
+        challanDate,
+        deliveryDate,
+        remarks = '',
+        notes = '',
+        items = []
+    } = data;
+
+    if (!items || items.length === 0) {
+        throw new Error('At least one tool item is required to create a Scrap Delivery Challan');
+    }
+
+    if (!scrapDealerId) {
+        throw new Error('Scrap Dealer selection is required');
+    }
+
+    let scrapDealer = null;
+    try {
+        scrapDealer = await profileService.getProfileById(scrapDealerId);
+    } catch (e) {
+        // Fallback check
+        scrapDealer = await vendorService.getVendorById(scrapDealerId);
+    }
+
+    if (!scrapDealer) {
+        throw new Error('Selected Scrap Dealer profile not found');
+    }
+
+    return await runInTransaction(async (session) => {
+        const challanNumber = await generateChallanNumber('Delivery', session);
+
+        const scrapDealerSnapshot = {
+            _id: scrapDealer._id,
+            name: scrapDealer.name,
+            vendorCode: scrapDealer.code || scrapDealer.vendorCode || `SCR-${scrapDealer._id.toString().substring(0, 6).toUpperCase()}`,
+            address: scrapDealer.address || '',
+            gstNumber: scrapDealer.gstNumber || '',
+            licenseNumber: scrapDealer.licenseNumber || '',
+            contactPerson: scrapDealer.contactPerson || '',
+            contactPhone: scrapDealer.contactPhone || ''
+        };
+
+        const createdBy = {
+            _id: user._id || null,
+            name: user.name || user.username || 'System User',
+            email: user.email || 'system@landt.com'
+        };
+
+        const challan = new Challan({
+            challanNumber,
+            challanType: 'Delivery',
+            status: 'Completed',
+            siteCode,
+            vendorCode: scrapDealerSnapshot.vendorCode,
+            subcontractorName: scrapDealerSnapshot.name,
+            locationChainage,
+            workFrontLocation,
+            trnCode,
+            sendingCentreCode,
+            mrNo,
+            mrDate,
+            stockType,
+            ewayBillNo,
+            gatePassNo,
+            gatePassApprovedBy,
+            consignorTaxNo,
+            vehicleNo,
+            lrNo,
+            freightStatus,
+            receiverName: receiverName || scrapDealerSnapshot.contactPerson || scrapDealerSnapshot.name,
+            receiverMobile: receiverMobile || scrapDealerSnapshot.contactPhone || '',
+            mrnNo,
+            receiptDate,
+            vendor: scrapDealerSnapshot,
+            store: storeId || null,
+            challanDate: challanDate ? new Date(challanDate) : new Date(),
+            deliveryDate: deliveryDate ? new Date(deliveryDate) : new Date(),
+            remarks: remarks || `Scrap Transfer to ${scrapDealerSnapshot.name}`,
+            notes: notes || `Scrap Delivery Challan generated for ${items.length} tools`,
+            items: items.map(it => ({
+                ...it,
+                returnStatus: 'Sent'
+            })),
+            toolCount: items.length,
+            createdBy
+        });
+
+        const saveOptions = session ? { session } : {};
+        await challan.save(saveOptions);
+
+        // Update Tool Status to 'Scrapped' & set isScrapped: true
+        const toolIds = items.map(i => i.tool);
+        const updateOptions = session ? { session } : {};
+        await Tool.updateMany(
+            { _id: { $in: toolIds } },
+            {
+                $set: {
+                    status: 'Scrapped',
+                    isScrapped: true,
+                    scrappedAt: new Date(),
+                    scrappedBy: createdBy,
+                    scrapDealer: {
+                        _id: scrapDealerSnapshot._id,
+                        name: scrapDealerSnapshot.name,
+                        code: scrapDealerSnapshot.vendorCode
+                    },
+                    scrapReason: remarks || notes || `Dispatched to Scrap Dealer: ${scrapDealerSnapshot.name}`
+                }
+            },
+            updateOptions
+        );
+
+        // Log Tool Movements
+        const movementLogs = items.map(item => ({
+            tool: item.tool,
+            toolIdStr: item.toolId,
+            description: item.description || '',
+            movementType: 'Delivery',
+            from: 'Store',
+            to: `Scrap Dealer: ${scrapDealerSnapshot.name}`,
+            referenceNumber: challanNumber,
+            date: new Date(),
+            user: createdBy.name,
+            remarks: remarks || `Scrapped and dispatched via ${challanNumber}`
+        }));
+
+        const insertOptions = session ? { session } : {};
+        await ToolMovement.insertMany(movementLogs, insertOptions);
+
+        // Audit log
+        const auditLog = new ChallanAuditLog({
+            user: createdBy,
+            action: 'Scrap DC Creation',
+            referenceNumber: challanNumber,
+            details: `Created Scrap Delivery Challan ${challanNumber} with ${items.length} tools for Scrap Dealer ${scrapDealerSnapshot.name}`,
+            metadata: { toolCount: items.length, scrapDealerName: scrapDealerSnapshot.name }
+        });
+        await auditLog.save(saveOptions);
+
+        // Update profile metrics
+        await profileService.updateProfileMetrics(scrapDealer._id, { dcDelta: 1, scrapDelta: items.length }, session);
 
         return challan;
     });

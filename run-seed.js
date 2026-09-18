@@ -1,10 +1,5 @@
-import { connectDB } from './src/config/db.js';
-import { seedDatabase } from './src/utils/seed.js';
-
 const run = async () => {
-    await connectDB();
-    await seedDatabase();
-    console.log("Seeding complete!");
+    console.log("Seeding is disabled.");
     process.exit(0);
 };
 

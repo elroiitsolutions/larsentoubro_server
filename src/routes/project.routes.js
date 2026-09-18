@@ -6,16 +6,16 @@ import {
     updateProject,
     deleteProject
 } from '../controllers/project.controller.js';
-import { authenticate, requirePagePermission } from '../middleware/auth.middleware.js';
+import { authenticate, requirePagePermission, requireAdmin } from '../middleware/auth.middleware.js';
 
 const router = express.Router();
 
 router.use(authenticate, requirePagePermission("/projects"));
 
-router.post('/', createProject);
+router.post('/', requireAdmin, createProject);
 router.get('/', getProjects);
 router.get('/:id', getProjectById);
-router.put('/:id', updateProject);
-router.delete('/:id', deleteProject);
+router.put('/:id', requireAdmin, updateProject);
+router.delete('/:id', requireAdmin, deleteProject);
 
 export default router;

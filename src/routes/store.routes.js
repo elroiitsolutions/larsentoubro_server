@@ -12,10 +12,12 @@ import {
     createToolInStore,
     exportToolsByStoreId,
     getToolFilterOptions,
-    bulkEditTools
+    bulkEditTools,
+    bulkDeleteTools,
+    transferTools
 } from '../controllers/tool.controller.js';
 import { importController } from '../controllers/import.controller.js';
-import { authenticate, requirePagePermission } from '../middleware/auth.middleware.js';
+import { authenticate, requirePagePermission, requireAdmin } from '../middleware/auth.middleware.js';
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -23,18 +25,20 @@ const upload = multer({ storage: multer.memoryStorage() });
 router.use(authenticate, requirePagePermission("/stores"));
 
 // Store CRUD Endpoints
-router.post('/', createStore);
+router.post('/', requireAdmin, createStore);
 router.get('/', getStores);
 router.get('/:id', getStoreById);
-router.put('/:id', updateStore);
-router.delete('/:id', deleteStore);
+router.put('/:id', requireAdmin, updateStore);
+router.delete('/:id', requireAdmin, deleteStore);
 
 // Store-Scoped Tool Endpoints (/api/stores/:storeId/tools)
 router.get('/:storeId/tools/export', exportToolsByStoreId);
 router.get('/:storeId/tools/filter-options', getToolFilterOptions);
 router.get('/:storeId/tools', getToolsByStoreId);
 router.post('/:storeId/tools', createToolInStore);
-router.post('/:storeId/tools/bulk-edit', bulkEditTools);
+router.post('/:storeId/tools/bulk-edit', requireAdmin, bulkEditTools);
+router.post('/:storeId/tools/bulk-delete', requireAdmin, bulkDeleteTools);
+router.post('/:storeId/tools/transfer', transferTools);
 
 // Store-Scoped Tool Bulk Import Endpoints
 router.get('/:storeId/tools/bulk-import/sample', importController.downloadStoreToolsSample);

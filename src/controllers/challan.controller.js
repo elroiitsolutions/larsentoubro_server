@@ -9,6 +9,15 @@ export const createDeliveryChallan = async (req, res, next) => {
     }
 };
 
+export const createScrapDeliveryChallan = async (req, res, next) => {
+    try {
+        const challan = await challanService.createScrapDeliveryChallan(req.body, req.user || {});
+        res.status(201).json({ success: true, data: challan, message: 'Scrap Delivery Challan created successfully' });
+    } catch (error) {
+        next(error);
+    }
+};
+
 export const createReturnChallan = async (req, res, next) => {
     try {
         const challan = await challanService.createReturnChallan(req.body, req.user || {});
@@ -20,7 +29,11 @@ export const createReturnChallan = async (req, res, next) => {
 
 export const getChallans = async (req, res, next) => {
     try {
-        const result = await challanService.getChallans(req.query);
+        const queryParams = { ...req.query };
+        if (req.user && req.user.role === 'Vendor') {
+            queryParams.vendor = req.user._id ? req.user._id.toString() : (req.user.vendorCode || req.user.email);
+        }
+        const result = await challanService.getChallans(queryParams);
         res.status(200).json({ success: true, ...result });
     } catch (error) {
         next(error);

@@ -1,145 +1,74 @@
-import { Vendor } from '../models/vendor.model.js';
-import { User } from '../models/user.model.js';
+import * as profileService from './profile.service.js';
 
 export const getVendors = async (params = {}) => {
-    const { page = 1, limit = 50, search = '' } = params;
-
-    // Remove any previously seeded mock vendors from the Vendor collection so they never appear
-    await Vendor.deleteMany({ vendorCode: { $in: ['V-LNT01', 'V-ALP02', 'V-BLD03'] } }).catch(() => {});
-
-    const userQuery = { role: 'Vendor' };
-    const vendorQuery = {};
-
-    if (search) {
-        userQuery.$or = [
-            { name: { $regex: search, $options: 'i' } },
-            { user_id: { $regex: search, $options: 'i' } },
-            { email: { $regex: search, $options: 'i' } },
-            { phonenumber: { $regex: search, $options: 'i' } }
-        ];
-        vendorQuery.$or = [
-            { name: { $regex: search, $options: 'i' } },
-            { vendorCode: { $regex: search, $options: 'i' } },
-            { contactEmail: { $regex: search, $options: 'i' } },
-            { contactPhone: { $regex: search, $options: 'i' } }
-        ];
-    }
-
-    const [vendorUsers, dbVendors] = await Promise.all([
-        User.find(userQuery).lean(),
-        Vendor.find(vendorQuery).lean()
-    ]);
-
-    const mappedUsers = vendorUsers.map(u => ({
-        _id: u._id.toString(),
-        name: u.name || 'Vendor User',
-        vendorCode: u.user_id || `V-${u._id.toString().substring(0, 6).toUpperCase()}`,
-        address: u.address || 'Powai Campus, Saki Vihar Road, Mumbai',
-        contactPerson: u.name || 'Vendor Contact',
-        contactPhone: u.phonenumber || '',
-        contactEmail: u.email || '',
-        gstNumber: u.gstNumber || '27AAACL0140P1Z0',
-        status: 'Active',
-        metrics: { dcCount: 0, rcCount: 0, returnedCount: 0, missingCount: 0 }
-    }));
-
-    const mappedDbVendors = dbVendors.map(v => ({
-        _id: v._id.toString(),
-        name: v.name || 'Vendor',
-        vendorCode: v.vendorCode || `V-${v._id.toString().substring(0, 6).toUpperCase()}`,
-        address: v.address || '',
-        contactPerson: v.contactPerson || v.name,
-        contactPhone: v.contactPhone || '',
-        contactEmail: v.contactEmail || '',
-        gstNumber: v.gstNumber || '',
-        status: v.status || 'Active',
-        metrics: v.metrics || { dcCount: 0, rcCount: 0, returnedCount: 0, missingCount: 0 }
-    }));
-
-    const combinedMap = new Map();
-    [...mappedUsers, ...mappedDbVendors].forEach(v => {
-        if (v && v._id) {
-            combinedMap.set(v._id, v);
-        }
+    const result = await profileService.getProfiles({
+        ...params,
+        profileType: 'Subcontractor'
     });
-    const combined = Array.from(combinedMap.values());
 
-    const total = combined.length;
-    const skip = (Number(page) - 1) * Number(limit);
-    const paginated = combined.slice(skip, skip + Number(limit));
+    const mappedData = (result.data || []).map(p => ({
+        _id: p._id.toString(),
+        name: p.name,
+        vendorCode: p.code,
+        code: p.code,
+        address: p.address || '',
+        contactPerson: p.contactPerson || '',
+        contactDesignation: p.contactDesignation || '',
+        contactPhone: p.contactPhone || '',
+        alternatePhone: p.alternatePhone || '',
+        contactEmail: p.contactEmail || '',
+        gstNumber: p.gstNumber || '',
+        panNumber: p.panNumber || '',
+        status: p.status || 'Active',
+        projects: p.projects || [],
+        stores: p.stores || [],
+        allowedPages: ['/stores', '/tools'],
+        metrics: p.metrics || { dcCount: 0, rcCount: 0, returnedCount: 0, missingCount: 0 }
+    }));
 
     return {
-        data: paginated,
-        total,
-        page: Number(page),
-        limit: Number(limit),
-        totalPages: Math.ceil(total / Number(limit)) || 1
+        ...result,
+        data: mappedData
     };
 };
 
 export const getVendorById = async (id) => {
-    const user = await User.findById(id).lean();
-    if (user && user.role === 'Vendor') {
-        return {
-            _id: user._id,
-            name: user.name || 'Vendor User',
-            vendorCode: user.user_id || `V-${user._id.toString().substring(0, 6).toUpperCase()}`,
-            address: user.address || 'Powai Campus, Saki Vihar Road, Mumbai',
-            contactPerson: user.name || 'Vendor Contact',
-            contactPhone: user.phonenumber || '',
-            contactEmail: user.email || '',
-            gstNumber: user.gstNumber || '27AAACL0140P1Z0',
-            status: 'Active',
-            metrics: { dcCount: 0, rcCount: 0, returnedCount: 0, missingCount: 0 }
-        };
-    }
-    // Fallback check in Vendor collection if not found in User collection
-    const vendor = await Vendor.findById(id).lean();
-    if (!vendor) {
-        throw new Error('Vendor not found');
-    }
-    return vendor;
+    const profile = await profileService.getProfileById(id);
+    return {
+        ...profile,
+        vendorCode: profile.code,
+        allowedPages: ['/stores', '/tools']
+    };
 };
 
 export const createVendor = async (data) => {
-    const existing = await Vendor.findOne({ vendorCode: data.vendorCode?.toUpperCase() });
-    if (existing) {
-        throw new Error('Vendor with this code already exists');
-    }
-    const vendor = new Vendor(data);
-    return await vendor.save();
+    const profilePayload = {
+        ...data,
+        profileType: 'Subcontractor',
+        code: data.vendorCode || data.code
+    };
+    const created = await profileService.createProfile(profilePayload);
+    return {
+        ...created.toObject(),
+        vendorCode: created.code
+    };
 };
 
 export const updateVendor = async (id, data) => {
-    const vendor = await Vendor.findByIdAndUpdate(id, data, { new: true, runValidators: true });
-    if (!vendor) {
-        throw new Error('Vendor not found');
+    if (data.vendorCode) {
+        data.code = data.vendorCode;
     }
-    return vendor;
+    const updated = await profileService.updateProfile(id, data);
+    return {
+        ...updated.toObject(),
+        vendorCode: updated.code
+    };
 };
 
 export const deleteVendor = async (id) => {
-    const vendor = await Vendor.findByIdAndDelete(id);
-    if (!vendor) {
-        throw new Error('Vendor not found');
-    }
-    return vendor;
+    return await profileService.deleteProfile(id);
 };
 
-export const updateVendorMetrics = async (vendorId, { dcDelta = 0, rcDelta = 0, returnedDelta = 0, missingDelta = 0 }, session = null) => {
-    if (!vendorId) return;
-    const update = {
-        $inc: {
-            'metrics.dcCount': dcDelta,
-            'metrics.rcCount': rcDelta,
-            'metrics.returnedCount': returnedDelta,
-            'metrics.missingCount': missingDelta
-        }
-    };
-    const options = { new: true };
-    if (session) options.session = session;
-    const updated = await Vendor.findByIdAndUpdate(vendorId, update, options);
-    if (!updated) {
-        await User.findByIdAndUpdate(vendorId, update, options).catch(() => {});
-    }
+export const updateVendorMetrics = async (vendorId, deltas = {}, session = null) => {
+    await profileService.updateProfileMetrics(vendorId, deltas, session);
 };

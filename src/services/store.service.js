@@ -12,7 +12,7 @@ const createStore = async (storeData) => {
     return store;
 };
 
-const getStores = async (projectId, assignedStoreIds = null) => {
+const getStores = async (projectId, assignedStoreIds = null, assignedToolIds = null) => {
     const query = {};
     if (projectId) {
         query.project = projectId;
@@ -29,12 +29,18 @@ const getStores = async (projectId, assignedStoreIds = null) => {
                 obj.projectId = obj.project._id;
                 obj.projectName = obj.project.name;
             }
-            const count = await Tool.countDocuments({
+            const toolQuery = {
                 $or: [
                     { currentSite: store._id },
                     { store: store._id }
-                ]
-            });
+                ],
+                isDeleted: { $ne: true },
+                isScrapped: { $ne: true }
+            };
+            if (assignedToolIds && Array.isArray(assignedToolIds)) {
+                toolQuery._id = { $in: assignedToolIds };
+            }
+            const count = await Tool.countDocuments(toolQuery);
             obj.toolsCount = count;
             return obj;
         })
@@ -42,7 +48,7 @@ const getStores = async (projectId, assignedStoreIds = null) => {
     return storeObjects;
 };
 
-const getStoreById = async (id) => {
+const getStoreById = async (id, assignedToolIds = null) => {
     const store = await Store.findById(id).populate('project', 'name');
     if (!store) return null;
     const obj = store.toObject();
@@ -50,12 +56,18 @@ const getStoreById = async (id) => {
         obj.projectId = obj.project._id;
         obj.projectName = obj.project.name;
     }
-    const count = await Tool.countDocuments({
+    const toolQuery = {
         $or: [
             { currentSite: store._id },
             { store: store._id }
-        ]
-    });
+        ],
+        isDeleted: { $ne: true },
+        isScrapped: { $ne: true }
+    };
+    if (assignedToolIds && Array.isArray(assignedToolIds)) {
+        toolQuery._id = { $in: assignedToolIds };
+    }
+    const count = await Tool.countDocuments(toolQuery);
     obj.toolsCount = count;
     return obj;
 };

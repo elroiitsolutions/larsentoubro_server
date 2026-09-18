@@ -4,6 +4,7 @@ import * as challanController from '../controllers/challan.controller.js';
 const router = Router();
 
 router.post('/delivery', challanController.createDeliveryChallan);
+router.post('/scrap-delivery', challanController.createScrapDeliveryChallan);
 router.post('/return', challanController.createReturnChallan);
 router.get('/', challanController.getChallans);
 router.get('/:id', challanController.getChallanById);

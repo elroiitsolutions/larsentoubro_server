@@ -49,7 +49,7 @@ export const getToolsReport = async (params = {}) => {
         sortOrder = 'desc'
     } = params;
 
-    const query = {};
+    const query = { isDeleted: { $ne: true } };
 
     if (project && project !== 'All') query.project = project;
     if (store && store !== 'All') query.currentSite = store;

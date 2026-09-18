@@ -37,7 +37,35 @@ const toolSchema = new mongoose.Schema({
     lifeExtensionYears: { type: Number, default: 0 },
     extensionApprovedBy: { type: String },
     extensionApprovedAt: { type: Date },
-    customFields: { type: Map, of: mongoose.Schema.Types.Mixed, default: {} }
+    customFields: { type: Map, of: mongoose.Schema.Types.Mixed, default: {} },
+    isDeleted: { type: Boolean, default: false, index: true },
+    deletedAt: { type: Date, default: null },
+    deletedBy: {
+        _id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        name: { type: String },
+        email: { type: String }
+    },
+    originalSerialNumber: { type: Number },
+    isPrinted: { type: Boolean, default: false, index: true },
+    printedAt: { type: Date, default: null },
+    printedBy: {
+        _id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        name: { type: String },
+        email: { type: String }
+    },
+    isScrapped: { type: Boolean, default: false, index: true },
+    scrappedAt: { type: Date, default: null },
+    scrappedBy: {
+        _id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        name: { type: String },
+        email: { type: String }
+    },
+    scrapReason: { type: String, default: '' },
+    scrapDealer: {
+        _id: { type: mongoose.Schema.Types.ObjectId, ref: 'Profile' },
+        name: { type: String },
+        code: { type: String }
+    }
 }, {
     timestamps: true
 });

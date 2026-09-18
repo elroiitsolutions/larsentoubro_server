@@ -4,11 +4,11 @@ import { Project } from '../models/project.model.js';
 import { Store } from '../models/store.model.js';
 import { ImportJob } from '../models/importJob.model.js';
 import ToolIdGenerator from '../utils/tool-id.js';
-import { 
+import {
     buildDynamicImportColumns,
-    isInstructionRow, 
-    getColumnValue, 
-    generateDynamicSampleExcelWorkbook 
+    isInstructionRow,
+    getColumnValue,
+    generateDynamicSampleExcelWorkbook
 } from '../config/tool-import-template.js';
 import { FormDefinition } from '../models/formDefinition.model.js';
 import { processImportJob, addJobListener, removeJobListener } from '../services/importWorker.service.js';
@@ -96,13 +96,13 @@ const previewStoreToolsImport = async (req, res, next) => {
         const form = await FormDefinition.findOne({ slug: 'tool-form', isActive: true });
         const formFields = form ? form.fields : [];
         const dynamicColumns = buildDynamicImportColumns(formFields);
-        
+
         // Define base schema keys from Tool model
         const coreKeys = [
             'description', 'toolCode', 'makeYear', 'capacity', 'safeWorkingLoad',
             'toolType', 'metalType', 'toolVariant', 'purchaserName', 'purchaserContact',
             'supplierCode', 'dateOfSupply', 'validityPeriod', 'testCertificate',
-            'project', 'currentSite', 'projectName', 'storeName', 
+            'project', 'currentSite', 'projectName', 'storeName',
             'subcontractorName', 'subcontractorCode', 'subcontractorMobile',
             'jobCode', 'jobDescription', 'remarks'
         ];
@@ -135,7 +135,7 @@ const previewStoreToolsImport = async (req, res, next) => {
 
             for (const colDef of dynamicColumns) {
                 let val = getColumnValue(row, colDef);
-                
+
                 const colNameNorm = (colDef.name || '').toLowerCase();
                 const colHeaderNorm = (colDef.header || '').toLowerCase();
                 const isProjectCol = colNameNorm.includes('project') || colHeaderNorm.includes('project');
@@ -260,7 +260,7 @@ const getImportJobStatus = async (req, res, next) => {
     try {
         const { jobId } = req.params;
         const job = await ImportJob.findById(jobId).select('-records').lean();
-        
+
         if (!job) {
             return res.status(404).json({ success: false, message: 'Import job not found' });
         }
@@ -282,7 +282,7 @@ const commitStoreToolsImport = async (req, res, next) => {
     try {
         const { storeId } = req.params;
         const { jobId } = req.body;
-        
+
         const targetStore = await Store.findById(storeId).populate('project');
         if (!targetStore) {
             return res.status(404).json({ success: false, message: 'Target store not found.' });
