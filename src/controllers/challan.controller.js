@@ -9,6 +9,15 @@ export const createDeliveryChallan = async (req, res, next) => {
     }
 };
 
+export const createScrapDeliveryChallan = async (req, res, next) => {
+    try {
+        const challan = await challanService.createScrapDeliveryChallan(req.body, req.user || {});
+        res.status(201).json({ success: true, data: challan, message: 'Scrap Delivery Challan created successfully' });
+    } catch (error) {
+        next(error);
+    }
+};
+
 export const createReturnChallan = async (req, res, next) => {
     try {
         const challan = await challanService.createReturnChallan(req.body, req.user || {});

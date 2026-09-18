@@ -11,6 +11,7 @@ const challanAuditLogSchema = new mongoose.Schema({
         type: String, 
         enum: [
             'DC Creation', 
+            'Scrap DC Creation',
             'DC Edit', 
             'RC Creation', 
             'Status Change', 

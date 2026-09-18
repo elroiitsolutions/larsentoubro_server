@@ -460,7 +460,7 @@ const getDeletedTools = async (params = {}) => {
 };
 
 const getScrappedTools = async (params = {}) => {
-    const { page = 1, limit = 10, search = '', storeId, projectId, sortBy = 'scrappedAt', sortOrder = 'desc' } = params;
+    const { page = 1, limit = 10, search = '', storeId, projectId, scrapDealer, sortBy = 'scrappedAt', sortOrder = 'desc' } = params;
     const query = { isScrapped: true };
 
     if (storeId && storeId !== 'All') {
@@ -472,13 +472,29 @@ const getScrappedTools = async (params = {}) => {
         query.project = projectId;
     }
 
+    if (scrapDealer && scrapDealer !== 'All') {
+        const dealerRegex = scrapDealer.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const isObjId = mongoose.Types.ObjectId.isValid(scrapDealer);
+        if (!query.$and) query.$and = [];
+        query.$and.push({
+            $or: [
+                { 'scrapDealer._id': scrapDealer },
+                ...(isObjId ? [{ 'scrapDealer._id': new mongoose.Types.ObjectId(scrapDealer) }] : []),
+                { 'scrapDealer.name': { $regex: dealerRegex, $options: 'i' } },
+                { scrapReason: { $regex: dealerRegex, $options: 'i' } }
+            ]
+        });
+    }
+
     if (search) {
         if (!query.$and) query.$and = [];
         query.$and.push({
             $or: [
                 { description: { $regex: search, $options: 'i' } },
                 { toolId: { $regex: search, $options: 'i' } },
-                { toolCode: { $regex: search, $options: 'i' } }
+                { toolCode: { $regex: search, $options: 'i' } },
+                { 'scrapDealer.name': { $regex: search, $options: 'i' } },
+                { scrapReason: { $regex: search, $options: 'i' } }
             ]
         });
     }
