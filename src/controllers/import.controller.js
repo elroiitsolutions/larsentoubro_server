@@ -33,7 +33,7 @@ const formatImportDateValue = (val) => {
         const mm = String(val.getMonth() + 1).padStart(2, '0');
         const dd = String(val.getDate()).padStart(2, '0');
         const yyyy = val.getFullYear();
-        return `${mm}/${dd}/${yyyy}`;
+        return `${dd}/${mm}/${yyyy}`;
     }
     const str = String(val).trim();
     if (!str) return '';
@@ -46,7 +46,7 @@ const formatImportDateValue = (val) => {
             const mm = String(dateObj.getUTCMonth() + 1).padStart(2, '0');
             const dd = String(dateObj.getUTCDate()).padStart(2, '0');
             const yyyy = dateObj.getUTCFullYear();
-            return `${mm}/${dd}/${yyyy}`;
+            return `${dd}/${mm}/${yyyy}`;
         }
     }
 
@@ -62,7 +62,7 @@ const formatImportDateValue = (val) => {
                     const mm = String(dateObj.getUTCMonth() + 1).padStart(2, '0');
                     const dd = String(dateObj.getUTCDate()).padStart(2, '0');
                     const yyyy = dateObj.getUTCFullYear();
-                    return `${mm}/${dd}/${yyyy}`;
+                    return `${dd}/${mm}/${yyyy}`;
                 }
             }
         }
