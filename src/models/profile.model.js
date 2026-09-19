@@ -31,6 +31,13 @@ const profileSchema = new mongoose.Schema({
     contactPhone: { type: String, default: '' },
     alternatePhone: { type: String, default: '' },
     contactEmail: { type: String, default: '' },
+    keyPersonnel: [{
+        name: { type: String, default: '' },
+        designation: { type: String, default: '' },
+        phone: { type: String, default: '' },
+        alternatePhone: { type: String, default: '' },
+        email: { type: String, default: '' }
+    }],
     address: { type: String, default: '' },
     gstNumber: { type: String, default: '', uppercase: true, trim: true },
     panNumber: { type: String, default: '', uppercase: true, trim: true },
