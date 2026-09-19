@@ -4,8 +4,9 @@ import { Project } from '../models/project.model.js';
 import { Store } from '../models/store.model.js';
 import { ToolMovement } from '../models/toolMovement.model.js';
 import ToolAuditLog from '../models/toolAuditLog.model.js';
+import { getVendorAssignedScope } from '../utils/vendorScope.js';
 
-export const getDashboardStats = async (filters = {}) => {
+export const getDashboardStats = async (filters = {}, user = null) => {
     const {
         division,
         project: projectId,
@@ -17,19 +18,92 @@ export const getDashboardStats = async (filters = {}) => {
         endDate
     } = filters;
 
+    let isRestrictedUser = false;
+    let allowedStoreObjectIds = null;
+    let allowedProjectObjectIds = null;
+    let allowedToolObjectIds = null;
+
+    if (user && user.role === 'Vendor') {
+        isRestrictedUser = true;
+        const scope = await getVendorAssignedScope(user);
+        allowedToolObjectIds = scope.assignedToolObjectIds;
+        allowedStoreObjectIds = scope.assignedStoreObjectIds;
+        allowedProjectObjectIds = scope.assignedProjectObjectIds;
+    } else if (user && user.role !== 'Admin') {
+        isRestrictedUser = true;
+        const assignedStoreIds = (user.stores || []).map(s => {
+            if (!s) return '';
+            if (typeof s === 'object' && s._id) return s._id.toString();
+            return s.toString();
+        }).filter(Boolean);
+
+        const assignedProjectIds = (user.projects || []).map(p => {
+            if (!p) return '';
+            if (typeof p === 'object' && p._id) return p._id.toString();
+            return p.toString();
+        }).filter(Boolean);
+
+        if (assignedStoreIds.length > 0) {
+            allowedStoreObjectIds = assignedStoreIds.map(id => new mongoose.Types.ObjectId(id));
+            if (assignedProjectIds.length > 0) {
+                allowedProjectObjectIds = assignedProjectIds.map(id => new mongoose.Types.ObjectId(id));
+            }
+        } else if (assignedProjectIds.length > 0) {
+            allowedProjectObjectIds = assignedProjectIds.map(id => new mongoose.Types.ObjectId(id));
+            const projStores = await Store.find({ project: { $in: allowedProjectObjectIds } }).select('_id').lean();
+            allowedStoreObjectIds = projStores.map(s => s._id);
+        } else {
+            allowedStoreObjectIds = [];
+            allowedProjectObjectIds = [];
+        }
+    }
+
     // Build Tool query
-    const query = { isDeleted: { $ne: true } };
+    const query = { isDeleted: { $ne: true }, isScrapped: { $ne: true } };
+
+    if (isRestrictedUser) {
+        if (allowedToolObjectIds !== null) {
+            query._id = { $in: allowedToolObjectIds };
+        }
+        if (allowedStoreObjectIds !== null) {
+            if (storeId && storeId !== 'All' && mongoose.Types.ObjectId.isValid(storeId)) {
+                const storeObjId = new mongoose.Types.ObjectId(storeId);
+                const isAllowed = allowedStoreObjectIds.some(id => id.equals(storeObjId));
+                if (isAllowed) {
+                    query.currentSite = storeObjId;
+                } else {
+                    query.currentSite = { $in: [] };
+                }
+            } else {
+                query.currentSite = { $in: allowedStoreObjectIds };
+            }
+        }
+        if (allowedProjectObjectIds !== null && allowedProjectObjectIds.length > 0) {
+            if (projectId && projectId !== 'All' && mongoose.Types.ObjectId.isValid(projectId)) {
+                const projObjId = new mongoose.Types.ObjectId(projectId);
+                const isAllowed = allowedProjectObjectIds.some(id => id.equals(projObjId));
+                if (isAllowed) {
+                    query.project = projObjId;
+                } else {
+                    query.project = { $in: [] };
+                }
+            } else {
+                query.project = { $in: allowedProjectObjectIds };
+            }
+        }
+    } else {
+        // Admin or unrestricted
+        if (projectId && projectId !== 'All' && mongoose.Types.ObjectId.isValid(projectId)) {
+            query.project = new mongoose.Types.ObjectId(projectId);
+        }
+
+        if (storeId && storeId !== 'All' && mongoose.Types.ObjectId.isValid(storeId)) {
+            query.currentSite = new mongoose.Types.ObjectId(storeId);
+        }
+    }
 
     if (division && division !== 'All') {
         query.division = division;
-    }
-
-    if (projectId && projectId !== 'All' && mongoose.Types.ObjectId.isValid(projectId)) {
-        query.project = new mongoose.Types.ObjectId(projectId);
-    }
-
-    if (storeId && storeId !== 'All' && mongoose.Types.ObjectId.isValid(storeId)) {
-        query.currentSite = new mongoose.Types.ObjectId(storeId);
     }
 
     if (hubId && hubId !== 'All' && mongoose.Types.ObjectId.isValid(hubId)) {
@@ -40,27 +114,49 @@ export const getDashboardStats = async (filters = {}) => {
         query.toolType = { $regex: `^${category}$`, $options: 'i' };
     }
 
-    if (status && status !== 'All') {
-        query.status = { $regex: `^${status}$`, $options: 'i' };
-    }
-
     if (startDate || endDate) {
         query.createdAt = {};
         if (startDate) query.createdAt.$gte = new Date(startDate);
         if (endDate) query.createdAt.$lte = new Date(endDate);
     }
 
-    // 1. Fetch all dashboard data concurrently in parallel
-    const [tools, movements, allProjects, allStores, auditLogs] = await Promise.all([
+    // 1. Fetch stores and projects scoped to user access
+    let storesFilter = {};
+    if (isRestrictedUser && allowedStoreObjectIds !== null) {
+        storesFilter._id = { $in: allowedStoreObjectIds };
+    }
+
+    const allStores = await Store.find(storesFilter).populate('project').lean();
+
+    let projectsFilter = {};
+    if (isRestrictedUser) {
+        if (allowedProjectObjectIds && allowedProjectObjectIds.length > 0) {
+            projectsFilter._id = { $in: allowedProjectObjectIds };
+        } else if (allowedStoreObjectIds && allowedStoreObjectIds.length > 0) {
+            const derivedProjIds = allStores.map(s => s.project && (s.project._id || s.project)).filter(Boolean);
+            projectsFilter._id = { $in: derivedProjIds };
+        } else {
+            projectsFilter._id = { $in: [] };
+        }
+    }
+
+    // 2. Fetch tools and projects concurrently
+    const [tools, allProjects] = await Promise.all([
         Tool.find(query)
             .populate('project', 'name projectCode division')
             .populate('currentSite', 'name location type division')
             .populate('hub', 'name location')
             .lean(),
-        ToolMovement.find().sort({ date: -1 }).limit(50).lean(),
-        Project.find().lean(),
-        Store.find().populate('project').lean(),
-        ToolAuditLog.find().sort({ timestamp: -1 }).limit(20).lean()
+        Project.find(projectsFilter).lean()
+    ]);
+
+    const toolIds = tools.map(t => t._id);
+    const movementQuery = isRestrictedUser ? { tool: { $in: toolIds } } : {};
+    const auditQuery = isRestrictedUser ? { tool: { $in: toolIds } } : {};
+
+    const [movements, auditLogs] = await Promise.all([
+        ToolMovement.find(movementQuery).sort({ date: -1 }).limit(50).lean(),
+        ToolAuditLog.find(auditQuery).sort({ timestamp: -1 }).limit(20).lean()
     ]);
 
     const now = new Date();
@@ -98,20 +194,32 @@ export const getDashboardStats = async (filters = {}) => {
         const isInspectionDue = st === 'inspection due' || (isOver3Years && (!tool.lifeExtensionYears || tool.lifeExtensionYears === 0) && st !== 'scrap');
         const isExpired = st === 'expired' || (tool.nextInspectionDueDate && new Date(tool.nextInspectionDueDate) < now && st !== 'scrap');
 
-        if (st === 'available') available++;
-        else if (st === 'issued') issued++;
-        else if (st === 'under inspection' || st === 'inspection') underInspection++;
-        else if (isInspectionDue) inspectionDue++;
-        else if (isExpired) expired++;
-        else if (st.includes('repair') || st.includes('damaged') || st === 'damaged/repair') damagedRepair++;
-        else if (st === 'scrap') scrap++;
-        else if (st === 'missing') missing++;
-        else if (st === 'in transit' || st === 'transit') inTransit++;
-        else available++;
+        // Prioritize explicit tool statuses so operational statuses (missing, moving, available, etc.) are always accurate
+        if (st === 'missing') {
+            missing++;
+        } else if (st === 'moving' || st === 'in transit' || st === 'transit') {
+            inTransit++;
+        } else if (st === 'available') {
+            available++;
+        } else if (st === 'issued' || st === 'in use') {
+            issued++;
+        } else if (st === 'under inspection' || st === 'inspection' || st === 'maintenance') {
+            underInspection++;
+        } else if (st.includes('repair') || st.includes('damaged') || st === 'damaged/repair') {
+            damagedRepair++;
+        } else if (st === 'scrap' || st === 'scrapped') {
+            scrap++;
+        } else if (isInspectionDue) {
+            inspectionDue++;
+        } else if (isExpired) {
+            expired++;
+        } else {
+            available++;
+        }
 
-        if (['available', 'issued', 'in transit', 'transit', 'under inspection'].includes(st)) {
+        if (['available', 'issued', 'in use', 'in transit', 'transit', 'moving', 'under inspection'].includes(st)) {
             usable++;
-        } else if (['damaged/repair', 'repair', 'damaged', 'scrap', 'expired', 'unusable'].includes(st) || isExpired) {
+        } else if (['damaged/repair', 'repair', 'damaged', 'scrap', 'scrapped', 'expired', 'unusable', 'missing'].includes(st) || isExpired) {
             unusable++;
         } else {
             usable++;
@@ -131,7 +239,7 @@ export const getDashboardStats = async (filters = {}) => {
             over3YrPendingInspection++;
         }
 
-        if (isInspectionDue) {
+        if (isInspectionDue && st !== 'missing' && st !== 'scrap') {
             alerts.push({
                 id: `alert-insp-${tool._id}`,
                 type: 'Inspection Due',
@@ -143,7 +251,7 @@ export const getDashboardStats = async (filters = {}) => {
                 date: new Date()
             });
         }
-        if (isExpired) {
+        if (isExpired && st !== 'missing' && st !== 'scrap') {
             alerts.push({
                 id: `alert-exp-${tool._id}`,
                 type: 'Expired Tool',
@@ -239,8 +347,10 @@ export const getDashboardStats = async (filters = {}) => {
         const storesList = projStores.map(st => {
             const storeTools = tools.filter(t => t.currentSite && (t.currentSite._id || t.currentSite).toString() === st._id.toString());
             const stAvailable = storeTools.filter(t => norm(t.status) === 'available').length;
-            const stIssued = storeTools.filter(t => norm(t.status) === 'issued').length;
-            const stAlerts = storeTools.filter(t => ['missing', 'inspection due', 'expired', 'damaged/repair'].includes(norm(t.status))).length;
+            const stMoving = storeTools.filter(t => ['moving', 'in transit', 'transit'].includes(norm(t.status))).length;
+            const stMissing = storeTools.filter(t => norm(t.status) === 'missing').length;
+            const stIssued = storeTools.filter(t => ['issued', 'in use'].includes(norm(t.status))).length;
+            const stAlerts = storeTools.filter(t => ['missing', 'inspection due', 'expired', 'damaged/repair', 'damaged', 'repair'].includes(norm(t.status))).length;
 
             return {
                 id: st._id.toString(),
@@ -249,6 +359,8 @@ export const getDashboardStats = async (filters = {}) => {
                 location: st.location,
                 totalTools: storeTools.length,
                 available: stAvailable,
+                moving: stMoving,
+                missing: stMissing,
                 issued: stIssued,
                 alertsCount: stAlerts
             };
@@ -256,8 +368,10 @@ export const getDashboardStats = async (filters = {}) => {
 
         const projTools = tools.filter(t => t.project && (t.project._id || t.project).toString() === proj._id.toString());
         const prAvailable = projTools.filter(t => norm(t.status) === 'available').length;
-        const prIssued = projTools.filter(t => norm(t.status) === 'issued').length;
-        const prAlerts = projTools.filter(t => ['missing', 'inspection due', 'expired', 'damaged/repair'].includes(norm(t.status))).length;
+        const prMoving = projTools.filter(t => ['moving', 'in transit', 'transit'].includes(norm(t.status))).length;
+        const prMissing = projTools.filter(t => norm(t.status) === 'missing').length;
+        const prIssued = projTools.filter(t => ['issued', 'in use'].includes(norm(t.status))).length;
+        const prAlerts = projTools.filter(t => ['missing', 'inspection due', 'expired', 'damaged/repair', 'damaged', 'repair'].includes(norm(t.status))).length;
 
         divisionMap[divName].projects.push({
             id: proj._id.toString(),
@@ -266,6 +380,8 @@ export const getDashboardStats = async (filters = {}) => {
             type: 'Project',
             totalTools: projTools.length,
             available: prAvailable,
+            moving: prMoving,
+            missing: prMissing,
             issued: prIssued,
             alertsCount: prAlerts,
             stores: storesList
@@ -296,14 +412,14 @@ export const getDashboardStats = async (filters = {}) => {
     // 4. Status Overview
     const statusDistribution = [
         { status: 'Available', count: available, color: '#10b981' },
+        { status: 'Moving', count: inTransit, color: '#06b6d4' },
+        { status: 'Missing', count: missing, color: '#dc2626' },
         { status: 'Issued', count: issued, color: '#3b82f6' },
         { status: 'Under Inspection', count: underInspection, color: '#8b5cf6' },
         { status: 'Inspection Due', count: inspectionDue, color: '#f59e0b' },
         { status: 'Expired', count: expired, color: '#ef4444' },
         { status: 'Damaged / Repair', count: damagedRepair, color: '#f97316' },
-        { status: 'Scrap', count: scrap, color: '#64748b' },
-        { status: 'Missing', count: missing, color: '#dc2626' },
-        { status: 'In Transit', count: inTransit, color: '#06b6d4' }
+        { status: 'Scrap', count: scrap, color: '#64748b' }
     ];
 
     // 5. Activity Feed
@@ -342,6 +458,23 @@ export const getDashboardStats = async (filters = {}) => {
 
     activityFeed.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
+    // Filter alerts if status is explicitly requested
+    let displayAlerts = alerts;
+    if (status && status !== 'All') {
+        const normStatus = norm(status);
+        if (normStatus === 'missing') {
+            displayAlerts = alerts.filter(a => a.type === 'Missing Tool');
+        } else if (normStatus.includes('repair') || normStatus.includes('damaged')) {
+            displayAlerts = alerts.filter(a => a.type === 'Damaged / Under Repair');
+        } else if (normStatus === 'inspection due') {
+            displayAlerts = alerts.filter(a => a.type === 'Inspection Due');
+        } else if (normStatus === 'expired') {
+            displayAlerts = alerts.filter(a => a.type === 'Expired Tool');
+        } else if (normStatus === 'moving' || normStatus === 'in transit') {
+            displayAlerts = [];
+        }
+    }
+
     return {
         summaryCards: {
             totalTools,
@@ -355,7 +488,8 @@ export const getDashboardStats = async (filters = {}) => {
             usable,
             unusable,
             missing,
-            inTransit
+            inTransit,
+            moving: inTransit
         },
         hierarchyTree,
         statusDistribution,
@@ -375,7 +509,7 @@ export const getDashboardStats = async (filters = {}) => {
             pendingInward,
             currentlyInTransit: inTransit
         },
-        alerts: alerts.slice(0, 15),
+        alerts: displayAlerts.slice(0, 15),
         recentActivity: activityFeed.slice(0, 15)
     };
 };
