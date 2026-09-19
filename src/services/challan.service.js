@@ -96,6 +96,17 @@ export const createDeliveryChallan = async (data, user = {}) => {
         throw new Error('At least one tool item is required to create a Delivery Challan');
     }
 
+    const toolIds = items.map(i => i.tool);
+    const toolsToCheck = await Tool.find({ _id: { $in: toolIds } });
+    const invalidMoving = toolsToCheck.filter(t => t.status === 'Moving');
+    if (invalidMoving.length > 0) {
+        throw new Error(`Cannot create Delivery Challan: Tool(s) ${invalidMoving.map(t => t.toolId).join(', ')} are already Moving`);
+    }
+    const invalidMissing = toolsToCheck.filter(t => t.status === 'Missing');
+    if (invalidMissing.length > 0) {
+        throw new Error(`Cannot create Delivery Challan: Tool(s) ${invalidMissing.map(t => t.toolId).join(', ')} are marked as Missing`);
+    }
+
     const vendorDoc = await vendorService.getVendorById(vendorId);
     if (!vendorDoc) {
         throw new Error('Selected vendor not found');
