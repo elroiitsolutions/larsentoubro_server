@@ -74,7 +74,7 @@ const formatImportDateValue = (val) => {
 /**
  * PREVIEW: Parse xlsx, validate rows, store in ImportJob, return summary + first page.
  * Records are now stored server-side — the client never holds 100K records in memory.
- */
+   */
 const previewStoreToolsImport = async (req, res, next) => {
     try {
         const { storeId } = req.params;

@@ -144,7 +144,7 @@ const getToolsByStoreId = async (storeId, params = {}) => {
     if (params.assignedToolIds && Array.isArray(params.assignedToolIds)) {
         query._id = { $in: params.assignedToolIds };
     }
-    
+
     applyAdvancedFilters(query, params);
 
     // Self-healing backfill for any legacy records missing numeric serialNumber
@@ -160,7 +160,7 @@ const getToolsByStoreId = async (storeId, params = {}) => {
     } catch (e) {
         // Silently ignore backfill errors
     }
-    
+
     const sort = {};
     if (sortBy === 'toolId' || sortBy === 'serialNumber') {
         sort.serialNumber = sortOrder === 'asc' ? 1 : -1;
@@ -168,9 +168,9 @@ const getToolsByStoreId = async (storeId, params = {}) => {
     } else if (sortBy) {
         sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
     }
-    
+
     const skip = (page - 1) * limit;
-    
+
     const [data, total] = await Promise.all([
         Tool.find(query)
             .populate('project', 'name projectCode')
@@ -180,7 +180,7 @@ const getToolsByStoreId = async (storeId, params = {}) => {
             .limit(parseInt(limit)),
         Tool.countDocuments(query)
     ]);
-    
+
     return {
         data,
         total,
@@ -194,7 +194,7 @@ const processToolData = (toolData) => {
     const data = {};
     const customFields = {};
     const corePaths = Object.keys(Tool.schema.paths);
-    
+
     for (const key of Object.keys(toolData)) {
         if (corePaths.includes(key)) {
             data[key] = toolData[key];
@@ -202,7 +202,7 @@ const processToolData = (toolData) => {
             customFields[key] = toolData[key];
         }
     }
-    
+
     data.customFields = { ...toolData.customFields, ...customFields };
     return data;
 };
@@ -460,7 +460,7 @@ const getDeletedTools = async (params = {}) => {
 };
 
 const getScrappedTools = async (params = {}) => {
-    const { page = 1, limit = 10, search = '', storeId, projectId, scrapDealer, sortBy = 'scrappedAt', sortOrder = 'desc' } = params;
+    const { page = 1, limit = 10, search = '', storeId, projectId, sortBy = 'scrappedAt', sortOrder = 'desc' } = params;
     const query = { isScrapped: true };
 
     if (storeId && storeId !== 'All') {
@@ -472,29 +472,13 @@ const getScrappedTools = async (params = {}) => {
         query.project = projectId;
     }
 
-    if (scrapDealer && scrapDealer !== 'All') {
-        const dealerRegex = scrapDealer.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const isObjId = mongoose.Types.ObjectId.isValid(scrapDealer);
-        if (!query.$and) query.$and = [];
-        query.$and.push({
-            $or: [
-                { 'scrapDealer._id': scrapDealer },
-                ...(isObjId ? [{ 'scrapDealer._id': new mongoose.Types.ObjectId(scrapDealer) }] : []),
-                { 'scrapDealer.name': { $regex: dealerRegex, $options: 'i' } },
-                { scrapReason: { $regex: dealerRegex, $options: 'i' } }
-            ]
-        });
-    }
-
     if (search) {
         if (!query.$and) query.$and = [];
         query.$and.push({
             $or: [
                 { description: { $regex: search, $options: 'i' } },
                 { toolId: { $regex: search, $options: 'i' } },
-                { toolCode: { $regex: search, $options: 'i' } },
-                { 'scrapDealer.name': { $regex: search, $options: 'i' } },
-                { scrapReason: { $regex: search, $options: 'i' } }
+                { toolCode: { $regex: search, $options: 'i' } }
             ]
         });
     }
@@ -735,22 +719,22 @@ const exportToolsByStoreId = async (storeId, params = {}) => {
         ],
         isDeleted: { $ne: true }
     };
-    
+
     if (exportScope === 'filtered') {
         applyAdvancedFilters(query, params);
     }
-    
+
     const sort = {};
     if (sortBy) {
         sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
     }
-    
+
     const tools = await Tool.find(query)
         .populate('project', 'name projectCode')
         .populate('currentSite', 'name location')
         .sort(sort)
         .lean();
-        
+
     const data = tools.map(t => ({
         'description': t.description || '',
         'make': t.makeYear || '',
@@ -780,7 +764,7 @@ const exportToolsByStoreId = async (storeId, params = {}) => {
 
     const bookType = exportType === 'csv' ? 'csv' : 'xlsx';
     const buffer = XLSX.write(workbook, { type: 'buffer', bookType });
-    
+
     return buffer;
 };
 
