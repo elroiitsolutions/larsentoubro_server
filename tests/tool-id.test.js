@@ -66,6 +66,8 @@ test('ToolIdGenerator - generateCapacityCode & generateSafeWorkingLoadCode', asy
 
 test('ToolIdGenerator - generateDateCode', async (t) => {
     assert.equal(ToolIdGenerator.generateDateCode('31/08/2025'), '0825');
+    assert.equal(ToolIdGenerator.generateDateCode('08/31/2025'), '0825');
+    assert.equal(ToolIdGenerator.generateDateCode('31-08-2025'), '0825');
     assert.equal(ToolIdGenerator.generateDateCode('15/05/2024'), '0524');
     assert.equal(ToolIdGenerator.generateDateCode('10/12/2026'), '1226');
     assert.equal(ToolIdGenerator.generateDateCode('2025-08-31'), '0825');

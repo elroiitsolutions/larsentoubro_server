@@ -135,14 +135,18 @@ class ToolIdGenerator {
                 }
             }
 
-            // Handle invalid parsed strings like "1/1/46165" where year part is Excel serial number
-            if (str.includes('/')) {
-                const parts = str.split('/');
+            const separator = str.includes('/') ? '/' : (str.includes('-') ? '-' : null);
+            if (separator) {
+                const parts = str.split('T')[0].split(separator);
                 if (parts.length === 3) {
-                    const yearNum = Number(parts[2]);
-                    if (!isNaN(yearNum) && yearNum > 30000 && yearNum < 100000) {
+                    const p0 = Number(parts[0]);
+                    const p1 = Number(parts[1]);
+                    const p2 = Number(parts[2]);
+
+                    // Handle invalid parsed strings like "1/1/46165" where year part is Excel serial number
+                    if (!isNaN(p2) && p2 > 30000 && p2 < 100000) {
                         const excelEpoch = new Date(Date.UTC(1899, 11, 30));
-                        const dateObj = new Date(excelEpoch.getTime() + yearNum * 86400000);
+                        const dateObj = new Date(excelEpoch.getTime() + p2 * 86400000);
                         if (!isNaN(dateObj.getTime())) {
                             const mm = String(dateObj.getUTCMonth() + 1).padStart(2, '0');
                             const yy = String(dateObj.getUTCFullYear()).slice(-2);
@@ -151,29 +155,25 @@ class ToolIdGenerator {
                     }
 
                     if (parts[0].length === 4) {
-                        // YYYY/MM/DD
+                        // YYYY/MM/DD or YYYY-MM-DD
                         const mm = parts[1].padStart(2, '0');
                         const yy = parts[0].slice(-2);
                         return mm + yy;
                     } else {
-                        // DD/MM/YYYY
-                        const mm = parts[1].padStart(2, '0');
-                        const yy = parts[2].slice(-2);
-                        return mm + yy;
-                    }
-                }
-            } else if (str.includes('-')) {
-                const parts = str.split('T')[0].split('-');
-                if (parts.length === 3) {
-                    if (parts[0].length === 4) {
-                        // YYYY-MM-DD
-                        const mm = parts[1].padStart(2, '0');
-                        const yy = parts[0].slice(-2);
-                        return mm + yy;
-                    } else {
-                        // DD-MM-YYYY
-                        const mm = parts[1].padStart(2, '0');
-                        const yy = parts[2].slice(-2);
+                        // DD/MM/YYYY or MM/DD/YYYY or DD-MM-YYYY or MM-DD-YYYY
+                        let mm = '';
+                        let yy = parts[2].slice(-2);
+
+                        if (!isNaN(p1) && p1 > 12) {
+                            // If middle part > 12, it's the Day, so first part (parts[0]) is Month (MM/DD/YYYY)
+                            mm = String(p0).padStart(2, '0');
+                        } else if (!isNaN(p0) && p0 > 12) {
+                            // If first part > 12, it's the Day, so middle part (parts[1]) is Month (DD/MM/YYYY)
+                            mm = String(p1).padStart(2, '0');
+                        } else {
+                            // Default to DD/MM/YYYY format (middle part is Month)
+                            mm = String(p1).padStart(2, '0');
+                        }
                         return mm + yy;
                     }
                 }
