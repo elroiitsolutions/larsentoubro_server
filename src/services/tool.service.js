@@ -26,6 +26,15 @@ const applyAdvancedFilters = (query, params) => {
         query.status = { $regex: `^${params.status.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' };
     }
 
+    const printVal = params.printStatus || params.isPrinted;
+    if (printVal && printVal !== 'All') {
+        if (printVal === 'Printed' || printVal === 'true' || printVal === true) {
+            query.isPrinted = true;
+        } else if (printVal === 'Not Printed' || printVal === 'Unprinted' || printVal === 'false' || printVal === false) {
+            query.isPrinted = { $ne: true };
+        }
+    }
+
     const filterFields = [
         'description', 'toolId', 'toolCode', 'toolType', 'status', 'makeYear',
         'capacity', 'safeWorkingLoad', 'metalType', 'toolVariant',
@@ -540,6 +549,41 @@ const markToolsAsPrinted = async ({ toolIds, user }) => {
     return { count: result.modifiedCount };
 };
 
+const unmarkToolsAsPrinted = async ({ toolIds, user }) => {
+    if (!Array.isArray(toolIds) || toolIds.length === 0) {
+        throw new Error('Specific tool IDs must be selected to unmark as printed');
+    }
+
+    const userInfo = {
+        _id: user?._id || null,
+        name: user?.name || user?.username || 'System User',
+        email: user?.email || 'system@landt.com'
+    };
+
+    const result = await Tool.updateMany(
+        { _id: { $in: toolIds } },
+        {
+            $set: {
+                isPrinted: false,
+                printedAt: null,
+                printedBy: null
+            }
+        }
+    );
+
+    const auditLog = new ToolAuditLog({
+        user: userInfo,
+        dateTime: new Date(),
+        action: 'Unmark Tools Printed',
+        affectedToolsCount: result.modifiedCount,
+        toolIds,
+        remarks: `Unmarked ${result.modifiedCount} tools as Printed (reverted to Not Printed)`
+    });
+    await auditLog.save();
+
+    return { count: result.modifiedCount };
+};
+
 const restoreToolById = async (id, user = {}) => {
     const tool = await Tool.findById(id);
     if (!tool) throw new Error('Tool not found');
@@ -1039,6 +1083,7 @@ export const toolService = {
     getDeletedTools,
     getScrappedTools,
     markToolsAsPrinted,
+    unmarkToolsAsPrinted,
     restoreToolById,
     bulkRestoreTools,
     permanentDeleteToolById,

@@ -175,6 +175,22 @@ export const markToolsAsPrinted = async (req, res, next) => {
     }
 };
 
+export const unmarkToolsAsPrinted = async (req, res, next) => {
+    try {
+        if (req.user && req.user.role === 'Vendor') {
+            return res.status(403).json({ success: false, message: 'Access denied. Vendors cannot modify print status.' });
+        }
+        const { toolIds } = req.body;
+        const result = await toolService.unmarkToolsAsPrinted({
+            toolIds,
+            user: req.user
+        });
+        res.status(200).json({ success: true, message: `Successfully unmarked ${result.count} tools as Printed`, data: result });
+    } catch (error) {
+        next(error);
+    }
+};
+
 export const restoreToolById = async (req, res, next) => {
     try {
         const { toolId } = req.params;

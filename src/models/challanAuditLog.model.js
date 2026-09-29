@@ -9,15 +9,6 @@ const challanAuditLogSchema = new mongoose.Schema({
     dateTime: { type: Date, default: Date.now },
     action: { 
         type: String, 
-        enum: [
-            'DC Creation', 
-            'Scrap DC Creation',
-            'DC Edit', 
-            'RC Creation', 
-            'Status Change', 
-            'Missing Tool Update', 
-            'PDF Download'
-        ], 
         required: true, 
         index: true 
     },
