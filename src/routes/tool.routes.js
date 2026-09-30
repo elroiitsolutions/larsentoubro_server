@@ -8,6 +8,7 @@ import {
     getDeletedTools,
     getScrappedTools,
     markToolsAsPrinted,
+    unmarkToolsAsPrinted,
     restoreToolById,
     bulkRestoreTools,
     permanentDeleteToolById,
@@ -24,6 +25,7 @@ router.use(authenticate);
 router.get('/trash', requireAdmin, getDeletedTools);
 router.get('/scrap', getScrappedTools);
 router.post('/mark-printed', markToolsAsPrinted);
+router.post('/unmark-printed', unmarkToolsAsPrinted);
 router.post('/bulk-delete', requireAdmin, bulkDeleteTools);
 router.post('/bulk-restore', requireAdmin, bulkRestoreTools);
 router.post('/bulk-permanent-delete', requireAdmin, bulkPermanentDeleteTools);
