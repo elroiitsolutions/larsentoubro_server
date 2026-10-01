@@ -69,18 +69,50 @@ export const resequenceProjectToolSerials = async (projectId) => {
     const projIdStr = projectId._id ? projectId._id.toString() : projectId.toString();
     const isObjId = mongoose.Types.ObjectId.isValid(projIdStr);
 
-    const matchQuery = {
+    const projectOrSiteFilter = {
         $or: [
             { project: projIdStr },
             ...(isObjId ? [{ project: new mongoose.Types.ObjectId(projIdStr) }] : []),
             { currentSite: projIdStr },
             ...(isObjId ? [{ currentSite: new mongoose.Types.ObjectId(projIdStr) }] : [])
-        ],
-        isDeleted: { $ne: true },
-        isScrapped: { $ne: true }
+        ]
     };
 
-    const activeTools = await Tool.find(matchQuery).sort({ createdAt: 1, _id: 1 });
+    // 1. Ensure any soft-deleted unprinted tools in DB have their toolId prefixed with __TRASHED_
+    // so they do not collide with active tools during resequencing in unique index { project: 1, toolId: 1 }.
+    const trashedUnprintedTools = await Tool.find({
+        ...projectOrSiteFilter,
+        isDeleted: true,
+        isPrinted: { $ne: true },
+        toolId: { $not: /^__TRASHED_/ }
+    }).select('_id toolId').lean();
+
+    if (trashedUnprintedTools.length > 0) {
+        const trashOps = trashedUnprintedTools.map(t => ({
+            updateOne: {
+                filter: { _id: t._id },
+                update: { $set: { toolId: `__TRASHED_${t._id}_${t.toolId || ''}` } }
+            }
+        }));
+        await Tool.bulkWrite(trashOps);
+    }
+
+    // 2. Fetch all printed tools (active or scrapped) for this project.
+    // Printed tools' serial numbers and toolId strings are physically printed and immutable.
+    const printedTools = await Tool.find({
+        ...projectOrSiteFilter,
+        isPrinted: true
+    }).select('serialNumber toolId').lean();
+
+    const printedSerials = new Set(printedTools.map(t => t.serialNumber).filter(Boolean));
+    const printedToolIds = new Set(printedTools.map(t => t.toolId).filter(Boolean));
+
+    // 3. Fetch active (non-deleted, non-scrapped) tools to resequence.
+    const activeTools = await Tool.find({
+        ...projectOrSiteFilter,
+        isDeleted: { $ne: true },
+        isScrapped: { $ne: true }
+    }).sort({ createdAt: 1, _id: 1 });
 
     let currentSerial = 1;
     const updates = [];
@@ -88,13 +120,16 @@ export const resequenceProjectToolSerials = async (projectId) => {
     for (const tool of activeTools) {
         // Printed tools must NEVER have their serial number or Tool ID altered during re-sequencing!
         if (tool.isPrinted) {
-            if (tool.serialNumber >= currentSerial) {
-                currentSerial = tool.serialNumber + 1;
-            }
             continue;
         }
 
-        const newToolId = ToolIdGenerator.generateToolId(tool, currentSerial);
+        // Find next available serial number not reserved by printed tools or existing printed tool IDs
+        let newToolId = ToolIdGenerator.generateToolId(tool, currentSerial);
+        while (printedSerials.has(currentSerial) || printedToolIds.has(newToolId)) {
+            currentSerial++;
+            newToolId = ToolIdGenerator.generateToolId(tool, currentSerial);
+        }
+
         const newQrLink = ToolIdGenerator.generateQrLink(newToolId);
 
         if (tool.serialNumber !== currentSerial || tool.toolId !== newToolId) {
@@ -132,6 +167,15 @@ export const resequenceProjectToolSerials = async (projectId) => {
             }
         }));
         await Tool.bulkWrite(finalOps);
+
+        // Sync references in parallel to avoid 30s timeout on large bulk operations
+        const syncPromises = updates
+            .filter(({ tool, newToolId }) => tool.toolId && tool.toolId !== newToolId)
+            .map(({ tool, newToolId }) => syncToolIdReferences(tool._id, tool.toolId, newToolId));
+
+        if (syncPromises.length > 0) {
+            await Promise.all(syncPromises);
+        }
     }
 
     const projectScopeKey = ToolIdGenerator.getProjectScopeKey({ project: projIdStr });
@@ -226,6 +270,17 @@ const createToolInStore = async (toolData) => {
             data.project = store.project;
         }
     }
+
+    // Automatic Validation Period Generation based on Purchaser Name
+    const purchaserStr = (data.purchaserName || '').trim().toLowerCase();
+    const rawValidity = (data.validityPeriod || '').trim();
+    if (!rawValidity || rawValidity === '' || rawValidity === 'N/A' || rawValidity === '-') {
+        if (purchaserStr === 'third party inspection' || purchaserStr.includes('third party inspection')) {
+            data.validityPeriod = '1 Year';
+        } else {
+            data.validityPeriod = '3 Years';
+        }
+    }
     if (!data.toolId) {
         const projectScopeKey = ToolIdGenerator.getProjectScopeKey(data);
         const serialNum = await ToolIdGenerator.allocateSerial(projectScopeKey);
@@ -259,24 +314,156 @@ const addValidityPeriods = (existingVal, newVal) => {
     return `${totalYears} Years`;
 };
 
-const updateToolById = async (id, toolData) => {
-    const data = processToolData(toolData);
-    delete data.toolId;
-    delete data.qrLink;
-    if (toolData.validityPeriod !== undefined) {
-        const existingTool = await Tool.findById(id);
-        if (existingTool) {
-            const rawVal = existingTool.validityPeriod || '';
-            const existingVal = (rawVal && rawVal !== 'N/A')
-                ? rawVal
-                : (existingTool.customFields?.get?.('validation') || existingTool.customFields?.get?.('validityPeriod') || rawVal);
-            data.validityPeriod = addValidityPeriods(existingVal, toolData.validityPeriod);
-        }
+export const syncToolIdReferences = async (toolObjectId, oldToolId, newToolId) => {
+    if (!oldToolId || !newToolId || oldToolId === newToolId) return;
+
+    try {
+        const { Challan } = await import('../models/challan.model.js');
+        const { ToolMovement } = await import('../models/toolMovement.model.js');
+        const { MissingTool } = await import('../models/missingTool.model.js');
+        const { default: ToolAuditLog } = await import('../models/toolAuditLog.model.js');
+
+        const objId = mongoose.Types.ObjectId.isValid(toolObjectId) 
+            ? new mongoose.Types.ObjectId(toolObjectId.toString())
+            : toolObjectId;
+        const idStr = toolObjectId.toString();
+
+        // 1. Update Challan items
+        await Challan.updateMany(
+            {
+                $or: [
+                    { 'items.tool': objId },
+                    { 'items.tool': idStr },
+                    { 'items.toolId': oldToolId }
+                ]
+            },
+            {
+                $set: { 'items.$[elem].toolId': newToolId }
+            },
+            {
+                arrayFilters: [
+                    {
+                        $or: [
+                            { 'elem.tool': objId },
+                            { 'elem.tool': idStr },
+                            { 'elem.toolId': oldToolId }
+                        ]
+                    }
+                ]
+            }
+        );
+
+        // 2. Update ToolMovement records
+        await ToolMovement.updateMany(
+            {
+                $or: [
+                    { tool: objId },
+                    { tool: idStr },
+                    { toolIdStr: oldToolId }
+                ]
+            },
+            {
+                $set: { toolIdStr: newToolId }
+            }
+        );
+
+        // 3. Update MissingTool records
+        await MissingTool.updateMany(
+            {
+                $or: [
+                    { tool: objId },
+                    { tool: idStr },
+                    { toolIdStr: oldToolId }
+                ]
+            },
+            {
+                $set: { toolIdStr: newToolId }
+            }
+        );
+
+        // 4. Update ToolAuditLog snapshots
+        await ToolAuditLog.updateMany(
+            {
+                $or: [
+                    { 'snapshots._id': objId },
+                    { 'snapshots._id': idStr },
+                    { 'snapshots.toolId': oldToolId }
+                ]
+            },
+            {
+                $set: { 'snapshots.$[elem].toolId': newToolId }
+            },
+            {
+                arrayFilters: [
+                    {
+                        $or: [
+                            { 'elem._id': objId },
+                            { 'elem._id': idStr },
+                            { 'elem.toolId': oldToolId }
+                        ]
+                    }
+                ]
+            }
+        );
+
+        // 5. Update ToolAuditLog toolIds array elements
+        await ToolAuditLog.updateMany(
+            { toolIds: oldToolId },
+            { $set: { 'toolIds.$[elem]': newToolId } },
+            { arrayFilters: [{ elem: oldToolId }] }
+        );
+    } catch (error) {
+        console.error(`[syncToolIdReferences] Error syncing toolId references for tool ${toolObjectId}:`, error);
     }
-    const tool = await Tool.findByIdAndUpdate(id, data, { new: true, runValidators: true });
+};
+
+const updateToolById = async (id, toolData) => {
+    let query = { toolId: id };
+    if (mongoose.Types.ObjectId.isValid(id)) {
+        query = { $or: [{ _id: id }, { toolId: id }] };
+    }
+    const existingTool = await Tool.findOne(query);
+    if (!existingTool) throw new Error('Tool not found');
+
+    const data = processToolData(toolData);
+    if (toolData.validityPeriod !== undefined) {
+        const rawVal = existingTool.validityPeriod || '';
+        const existingVal = (rawVal && rawVal !== 'N/A')
+            ? rawVal
+            : (existingTool.customFields?.get?.('validation') || existingTool.customFields?.get?.('validityPeriod') || rawVal);
+        data.validityPeriod = addValidityPeriods(existingVal, toolData.validityPeriod);
+    }
+
+    // Merge existing tool record with new data to check if toolId prefix or full toolId changes
+    const existingObj = existingTool.toObject();
+    const mergedCustomFields = {
+        ...(existingObj.customFields || {}),
+        ...(data.customFields || {})
+    };
+    const mergedToolData = {
+        ...existingObj,
+        ...data,
+        customFields: mergedCustomFields
+    };
+
+    const serialNum = existingTool.serialNumber || 1;
+    const oldToolId = existingTool.toolId;
+    const newToolId = ToolIdGenerator.generateToolId(mergedToolData, serialNum);
+    const newQrLink = ToolIdGenerator.generateQrLink(newToolId);
+
+    data.toolId = newToolId;
+    data.qrLink = newQrLink;
+
+    const tool = await Tool.findByIdAndUpdate(existingTool._id, data, { new: true, runValidators: true });
     if (!tool) throw new Error('Tool not found');
+
+    if (oldToolId && oldToolId !== newToolId) {
+        await syncToolIdReferences(tool._id, oldToolId, newToolId);
+    }
+
     return tool;
 };
+
 
 const deleteToolById = async (id, user = {}) => {
     const tool = await Tool.findById(id);
@@ -324,6 +511,9 @@ const deleteToolById = async (id, user = {}) => {
         tool.status = 'Deleted';
         tool.deletedAt = new Date();
         tool.deletedBy = userInfo;
+        if (tool.toolId && !tool.toolId.startsWith('__TRASHED_')) {
+            tool.toolId = `__TRASHED_${tool._id}_${tool.toolId}`;
+        }
         await tool.save();
 
         if (tool.project || tool.currentSite) {
@@ -397,6 +587,9 @@ const bulkDeleteTools = async ({ toolIds, storeId, user }) => {
             tool.status = 'Deleted';
             tool.deletedAt = new Date();
             tool.deletedBy = userInfo;
+            if (tool.toolId && !tool.toolId.startsWith('__TRASHED_')) {
+                tool.toolId = `__TRASHED_${tool._id}_${tool.toolId}`;
+            }
 
             if (tool.project) affectedProjectIds.add(tool.project.toString());
             else if (tool.currentSite) affectedProjectIds.add(tool.currentSite.toString());
@@ -794,9 +987,14 @@ const exportToolsByStoreId = async (storeId, params = {}) => {
         'job_code': t.jobCode || '',
         'job_description': t.jobDescription || '',
         'current_site': t.currentSite ? (t.currentSite.name || t.currentSite.location || '') : '',
-        'validation': (t.validityPeriod && t.validityPeriod !== 'N/A')
-            ? t.validityPeriod
-            : (t.customFields?.validation || t.customFields?.validityPeriod || t.validityPeriod || ''),
+        'validation': (() => {
+            const raw = (t.validityPeriod && t.validityPeriod !== 'N/A')
+                ? t.validityPeriod
+                : (t.customFields?.validation || t.customFields?.validityPeriod || t.validityPeriod || '');
+            if (raw && String(raw).trim() !== '') return raw;
+            const purchaser = (t.purchaserName || t.customFields?.purchaserName || '').trim().toLowerCase();
+            return (purchaser === 'third party inspection' || purchaser.includes('third party inspection')) ? '1 Year' : '3 Years';
+        })(),
         'ITEM_CODE': t.toolCode || '',
         'tool id creation': t.toolId || '',
         'QR LINK ': t.qrLink || ''
@@ -915,6 +1113,16 @@ const bulkEditTools = async ({ storeId, toolIds, filterCriteria, updates, user }
             }
         }
 
+        const oldToolId = tool.toolId;
+        const serialNum = tool.serialNumber || 1;
+        const newToolId = ToolIdGenerator.generateToolId(tool, serialNum);
+        const newQrLink = ToolIdGenerator.generateQrLink(newToolId);
+
+        if (oldToolId !== newToolId) {
+            tool.toolId = newToolId;
+            tool.qrLink = newQrLink;
+        }
+
         snapshots.push({
             toolId: tool.toolId || tool._id.toString(),
             _id: tool._id,
@@ -923,6 +1131,10 @@ const bulkEditTools = async ({ storeId, toolIds, filterCriteria, updates, user }
         });
 
         await tool.save();
+
+        if (oldToolId && oldToolId !== newToolId) {
+            await syncToolIdReferences(tool._id, oldToolId, newToolId);
+        }
     }
 
     const auditLog = new ToolAuditLog({
@@ -1092,7 +1304,8 @@ export const toolService = {
     getToolById,
     getToolFilterOptions,
     bulkEditTools,
-    transferTools
+    transferTools,
+    syncToolIdReferences
 };
 
 

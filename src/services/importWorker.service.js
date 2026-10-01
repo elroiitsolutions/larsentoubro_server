@@ -117,6 +117,17 @@ export const processImportJob = async (jobId, targetStore) => {
                 delete toolData.projectName;
                 delete toolData.storeName;
 
+                // Ensure automatic validity period rule is enforced before saving to database
+                const purchaserStr = (toolData.purchaserName || '').trim().toLowerCase();
+                const rawValidity = (toolData.validityPeriod || '').trim();
+                if (!rawValidity || rawValidity === '' || rawValidity === 'N/A' || rawValidity === '-') {
+                    if (purchaserStr === 'third party inspection' || purchaserStr.includes('third party inspection')) {
+                        toolData.validityPeriod = '1 Year';
+                    } else {
+                        toolData.validityPeriod = '3 Years';
+                    }
+                }
+
                 const currentSerial = startSerial + globalIdx;
                 toolData.serialNumber = currentSerial;
                 toolData.toolId = ToolIdGenerator.generateToolId(toolData, currentSerial);

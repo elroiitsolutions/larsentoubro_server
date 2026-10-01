@@ -168,6 +168,18 @@ const previewStoreToolsImport = async (req, res, next) => {
                 }
             }
 
+            // Automatic Validation Period Generation based on Purchaser Name
+            const purchaserStr = (toolData.purchaserName || '').trim().toLowerCase();
+            const rawValidity = (toolData.validityPeriod || '').trim();
+
+            if (!rawValidity || rawValidity === '' || rawValidity === 'N/A' || rawValidity === '-') {
+                if (purchaserStr === 'third party inspection' || purchaserStr.includes('third party inspection')) {
+                    toolData.validityPeriod = '1 Year';
+                } else {
+                    toolData.validityPeriod = '3 Years';
+                }
+            }
+
             toolData.isValid = errors.length === 0;
             parsedRecords.push(toolData);
         }

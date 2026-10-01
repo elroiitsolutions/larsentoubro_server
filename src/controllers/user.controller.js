@@ -86,6 +86,23 @@ const deleteUser = async (req, res, next) => {
 
 const getCurrentUser = async (req, res, next) => {
     try {
+        if (req.user && req.user.role === 'Guest') {
+            return res.status(200).json({
+                success: true,
+                data: {
+                    _id: req.user._id || 'guest_user_id',
+                    id: req.user.id || 'guest_user_id',
+                    name: req.user.name || 'Guest User',
+                    email: req.user.email || 'guest@lnt.com',
+                    role: 'Guest',
+                    user_id: 'GUEST-001',
+                    allowedPages: ['/qr-scanner'],
+                    projects: [],
+                    stores: []
+                }
+            });
+        }
+
         if (req.user && (req.user.isVendor || req.user.role === 'Vendor')) {
             const vendor = await Vendor.findById(req.user._id)
                 .populate('projects', 'name code location')
@@ -418,6 +435,31 @@ const streamRealtimeEvents = (req, res) => {
     res.write(`data: ${JSON.stringify({ event: 'connected', data: { clientId } })}\n\n`);
 };
 
+// Guest Login Handler
+const guestLogin = async (req, res, next) => {
+    try {
+        const guestUserPayload = {
+            _id: 'guest_' + Date.now(),
+            id: 'guest_user_id',
+            name: 'Guest User',
+            email: 'guest@lnt.com',
+            role: 'Guest',
+            user_id: 'GUEST-001',
+            allowedPages: ['/qr-scanner']
+        };
+
+        const token = generateUserToken(guestUserPayload);
+
+        return res.status(200).json({
+            success: true,
+            token,
+            user: guestUserPayload
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
 export const userController = {
     createUser,
     getUsers,
@@ -426,6 +468,7 @@ export const userController = {
     deleteUser,
     getCurrentUser,
     loginUser,
+    guestLogin,
     checkLoginRequestStatus,
     getPendingLoginRequests,
     approveLoginRequest,
