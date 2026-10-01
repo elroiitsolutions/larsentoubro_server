@@ -60,12 +60,7 @@ const toolSchema = new mongoose.Schema({
         name: { type: String },
         email: { type: String }
     },
-    scrapReason: { type: String, default: '' },
-    scrapDealer: {
-        _id: { type: mongoose.Schema.Types.ObjectId, ref: 'Profile' },
-        name: { type: String },
-        code: { type: String }
-    }
+    scrapReason: { type: String, default: '' }
 }, {
     timestamps: true
 });

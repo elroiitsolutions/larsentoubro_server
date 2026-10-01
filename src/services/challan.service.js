@@ -94,6 +94,7 @@ const runInTransaction = async (callback) => {
  */
 export const createDeliveryChallan = async (data, user = {}) => {
     const {
+        transferFromDcId,
         vendorId,
         storeId,
         siteCode = '',
@@ -128,18 +129,46 @@ export const createDeliveryChallan = async (data, user = {}) => {
         throw new Error('At least one tool item is required to create a Delivery Challan');
     }
 
+    const cleanSiteCode = typeof siteCode === 'string' ? siteCode.trim() : '';
+    if (!cleanSiteCode) {
+        throw new Error('Site Code is required to create a Delivery Challan');
+    }
+
+    let sourceDc = null;
+    if (transferFromDcId) {
+        sourceDc = await Challan.findById(transferFromDcId);
+        if (!sourceDc) {
+            throw new Error('Source Delivery Challan for transfer not found');
+        }
+        if (sourceDc.status !== 'Active') {
+            throw new Error(`Cannot transfer from Challan ${sourceDc.challanNumber}: status is '${sourceDc.status}' (Must be Active)`);
+        }
+    }
+
     const toolIds = items.map(i => i.tool);
     const toolsToCheck = await Tool.find({ _id: { $in: toolIds } });
-    const invalidMoving = toolsToCheck.filter(t => t.status === 'Moving');
-    if (invalidMoving.length > 0) {
-        throw new Error(`Cannot create Delivery Challan: Tool(s) ${invalidMoving.map(t => t.toolId).join(', ')} are already Moving`);
+
+    // When transferring, tools are already dispatched on source DC so status is expected to be Moving
+    if (!sourceDc) {
+        const invalidMoving = toolsToCheck.filter(t => t.status === 'Moving');
+        if (invalidMoving.length > 0) {
+            throw new Error(`Cannot create Delivery Challan: Tool(s) ${invalidMoving.map(t => t.toolId).join(', ')} are already Moving`);
+        }
     }
+
     const invalidMissing = toolsToCheck.filter(t => t.status === 'Missing');
     if (invalidMissing.length > 0) {
         throw new Error(`Cannot create Delivery Challan: Tool(s) ${invalidMissing.map(t => t.toolId).join(', ')} are marked as Missing`);
     }
 
-    const vendorDoc = await vendorService.getVendorById(vendorId);
+    const targetVendorId = vendorId || (sourceDc && sourceDc.vendor?._id);
+    let vendorDoc = null;
+    if (targetVendorId) {
+        vendorDoc = await vendorService.getVendorById(targetVendorId);
+    }
+    if (!vendorDoc && sourceDc && sourceDc.vendor) {
+        vendorDoc = sourceDc.vendor;
+    }
     if (!vendorDoc) {
         throw new Error('Selected vendor not found');
     }
@@ -152,10 +181,10 @@ export const createDeliveryChallan = async (data, user = {}) => {
             _id: vendorDoc._id,
             name: subcontractorName || vendorDoc.name,
             vendorCode: vendorCode || vendorDoc.vendorCode,
-            address: vendorDoc.address,
-            gstNumber: vendorDoc.gstNumber,
-            contactPerson: vendorDoc.contactPerson,
-            contactPhone: vendorDoc.contactPhone
+            address: vendorDoc.address || '',
+            gstNumber: vendorDoc.gstNumber || '',
+            contactPerson: vendorDoc.contactPerson || '',
+            contactPhone: vendorDoc.contactPhone || ''
         };
 
         const createdBy = {
@@ -168,7 +197,7 @@ export const createDeliveryChallan = async (data, user = {}) => {
             challanNumber,
             challanType: 'Delivery',
             status: 'Active',
-            siteCode,
+            siteCode: cleanSiteCode,
             vendorCode: vendorCode || vendorDoc.vendorCode,
             subcontractorName: subcontractorName || vendorDoc.name,
             locationChainage,
@@ -190,11 +219,15 @@ export const createDeliveryChallan = async (data, user = {}) => {
             mrnNo,
             receiptDate,
             vendor: vendorSnapshot,
-            store: storeId || null,
+            store: storeId || (sourceDc && sourceDc.store) || null,
             challanDate: challanDate ? new Date(challanDate) : new Date(),
             deliveryDate: deliveryDate ? new Date(deliveryDate) : new Date(),
-            remarks,
+            remarks: remarks || (sourceDc ? `Site Transfer from ${sourceDc.challanNumber}` : ''),
             notes,
+            referenceDcId: sourceDc ? sourceDc._id : null,
+            referenceDcNumber: sourceDc ? sourceDc.challanNumber : '',
+            transferFromDcId: sourceDc ? sourceDc._id : null,
+            transferFromDcNumber: sourceDc ? sourceDc.challanNumber : '',
             items: items.map(it => ({
                 ...it,
                 returnStatus: 'Sent'
@@ -206,43 +239,70 @@ export const createDeliveryChallan = async (data, user = {}) => {
         const saveOptions = session ? { session } : {};
         await challan.save(saveOptions);
 
+        // Update Source DC status to 'Transfer' and reference the new DC
+        if (sourceDc) {
+            sourceDc.status = 'Transfer';
+            sourceDc.transferredToDcId = challan._id;
+            sourceDc.transferredToDcNumber = challanNumber;
+            await sourceDc.save(saveOptions);
+        }
+
         // Update Tool Status to 'Moving' and log movements
-        const toolIds = items.map(i => i.tool);
-        const updateOptions = session ? { session } : {};
         await Tool.updateMany(
             { _id: { $in: toolIds } },
             { $set: { status: 'Moving' } },
-            updateOptions
+            saveOptions
         );
 
         const movementLogs = items.map(item => ({
             tool: item.tool,
             toolIdStr: item.toolId,
             description: item.description || '',
-            movementType: 'Delivery',
-            from: 'Store',
-            to: vendorSnapshot.name,
+            movementType: sourceDc ? 'Transfer' : 'Delivery',
+            from: sourceDc ? (sourceDc.siteCode ? `Site: ${sourceDc.siteCode}` : (sourceDc.vendor?.name || 'Previous Site')) : 'Store',
+            to: siteCode ? `Site: ${siteCode} (${vendorSnapshot.name})` : vendorSnapshot.name,
             referenceNumber: challanNumber,
             date: new Date(),
             user: createdBy.name,
-            remarks: remarks || `Dispatched via ${challanNumber}`
+            remarks: remarks || (sourceDc ? `Transferred from ${sourceDc.challanNumber} to ${challanNumber}` : `Dispatched via ${challanNumber}`)
         }));
 
-        const insertOptions = session ? { session } : {};
-        await ToolMovement.insertMany(movementLogs, insertOptions);
+        await ToolMovement.insertMany(movementLogs, saveOptions);
 
         // Audit log
-        const auditLog = new ChallanAuditLog({
-            user: createdBy,
-            action: 'DC Creation',
-            referenceNumber: challanNumber,
-            details: `Created Delivery Challan ${challanNumber} with ${items.length} tools for vendor ${vendorSnapshot.name}`,
-            metadata: { toolCount: items.length, vendorName: vendorSnapshot.name }
-        });
-        await auditLog.save(saveOptions);
+        if (sourceDc) {
+            const sourceAudit = new ChallanAuditLog({
+                user: createdBy,
+                action: 'DC Transfer Out',
+                referenceNumber: sourceDc.challanNumber,
+                details: `Transferred ${items.length} tools from ${sourceDc.challanNumber} to new Delivery Challan ${challanNumber} for site ${siteCode || 'new site'}`,
+                metadata: { newChallanNumber: challanNumber, toolCount: items.length }
+            });
+            await sourceAudit.save(saveOptions);
+
+            const newAudit = new ChallanAuditLog({
+                user: createdBy,
+                action: 'DC Transfer In',
+                referenceNumber: challanNumber,
+                details: `Created Transfer Delivery Challan ${challanNumber} with ${items.length} tools transferred from ${sourceDc.challanNumber}`,
+                metadata: { transferFrom: sourceDc.challanNumber, toolCount: items.length }
+            });
+            await newAudit.save(saveOptions);
+        } else {
+            const auditLog = new ChallanAuditLog({
+                user: createdBy,
+                action: 'DC Creation',
+                referenceNumber: challanNumber,
+                details: `Created Delivery Challan ${challanNumber} with ${items.length} tools for vendor ${vendorSnapshot.name}`,
+                metadata: { toolCount: items.length, vendorName: vendorSnapshot.name }
+            });
+            await auditLog.save(saveOptions);
+        }
 
         // Update vendor metrics
-        await vendorService.updateVendorMetrics(vendorId, { dcDelta: 1 }, session);
+        if (vendorDoc._id) {
+            await vendorService.updateVendorMetrics(vendorDoc._id, { dcDelta: 1 }, session);
+        }
 
         return challan;
     });
@@ -285,6 +345,11 @@ export const createScrapDeliveryChallan = async (data, user = {}) => {
         throw new Error('At least one tool item is required to create a Scrap Delivery Challan');
     }
 
+    const cleanSiteCode = typeof siteCode === 'string' ? siteCode.trim() : '';
+    if (!cleanSiteCode) {
+        throw new Error('Site Code is required to create a Scrap Delivery Challan');
+    }
+
     if (!scrapDealerId) {
         throw new Error('Scrap Dealer selection is required');
     }
@@ -325,7 +390,7 @@ export const createScrapDeliveryChallan = async (data, user = {}) => {
             challanNumber,
             challanType: 'Delivery',
             status: 'Completed',
-            siteCode,
+            siteCode: cleanSiteCode,
             vendorCode: scrapDealerSnapshot.vendorCode,
             subcontractorName: scrapDealerSnapshot.name,
             locationChainage,
@@ -472,27 +537,74 @@ export const createReturnChallan = async (data, user = {}) => {
         const saveOptions = session ? { session } : {};
         await challan.save(saveOptions);
 
-        // Mark reference DC as Completed to prevent duplicate RC creation
+        // Mark reference DC as Completed
         referenceDc.status = 'Completed';
         referenceDc.returnedCount = returnedItems.length;
         referenceDc.missingCount = missingItems.length;
         await referenceDc.save(saveOptions);
 
+        // If this DC was transferred from another DC (or chain of transfers), update all source DCs to 'Completed'
+        let currTransferSourceId = referenceDc.transferFromDcId;
+        let currTransferSourceNumber = referenceDc.transferFromDcNumber;
+        const visitedSourceKeys = new Set();
+        while (currTransferSourceId || currTransferSourceNumber) {
+            const key = String(currTransferSourceId || currTransferSourceNumber);
+            if (visitedSourceKeys.has(key)) break;
+            visitedSourceKeys.add(key);
+
+            let sourceDc = null;
+            if (currTransferSourceId) {
+                sourceDc = await Challan.findById(currTransferSourceId);
+            }
+            if (!sourceDc && currTransferSourceNumber) {
+                sourceDc = await Challan.findOne({ challanNumber: currTransferSourceNumber });
+            }
+            if (!sourceDc) break;
+
+            sourceDc.status = 'Completed';
+            sourceDc.returnedCount = returnedItems.length;
+            sourceDc.missingCount = missingItems.length;
+            await sourceDc.save(saveOptions);
+
+            try {
+                const sourceAuditLog = new ChallanAuditLog({
+                    user: createdBy,
+                    action: 'Status Change',
+                    referenceNumber: sourceDc.challanNumber,
+                    details: `Source transfer DC ${sourceDc.challanNumber} marked as Completed following return of ${referenceDc.challanNumber} via RC ${challanNumber}`,
+                    metadata: { rcNumber: challanNumber, activeDcNumber: referenceDc.challanNumber }
+                });
+                await sourceAuditLog.save(saveOptions);
+            } catch (sourceAuditErr) {
+                console.error('[createReturnChallan] Source audit log warning:', sourceAuditErr.message);
+            }
+
+            currTransferSourceId = sourceDc.transferFromDcId;
+            currTransferSourceNumber = sourceDc.transferFromDcNumber;
+        }
+
         // Process Returned Tools -> status: 'Available'
         if (returnedItems.length > 0) {
-            const returnedToolIds = returnedItems.map(i => i.tool);
+            const returnedToolIds = returnedItems.map(i => i.tool?._id || i.tool).filter(Boolean);
+            const returnedToolIdStrings = returnedItems.map(i => i.toolId).filter(Boolean);
+
             await Tool.updateMany(
-                { _id: { $in: returnedToolIds } },
+                {
+                    $or: [
+                        { _id: { $in: returnedToolIds } },
+                        { toolId: { $in: returnedToolIdStrings } }
+                    ]
+                },
                 { $set: { status: 'Available' } },
                 session ? { session } : {}
             );
 
             const returnLogs = returnedItems.map(item => ({
-                tool: item.tool,
+                tool: item.tool?._id || item.tool,
                 toolIdStr: item.toolId,
                 description: item.description || '',
                 movementType: 'Return',
-                from: referenceDc.vendor.name,
+                from: referenceDc.vendor?.name || 'Subcontractor',
                 to: 'Store',
                 referenceNumber: challanNumber,
                 date: new Date(),
@@ -504,19 +616,26 @@ export const createReturnChallan = async (data, user = {}) => {
 
         // Process Missing Tools -> status: 'Missing' & save in MissingTool
         if (missingItems.length > 0) {
-            const missingToolIds = missingItems.map(i => i.tool);
+            const missingToolIds = missingItems.map(i => i.tool?._id || i.tool).filter(Boolean);
+            const missingToolIdStrings = missingItems.map(i => i.toolId).filter(Boolean);
+
             await Tool.updateMany(
-                { _id: { $in: missingToolIds } },
+                {
+                    $or: [
+                        { _id: { $in: missingToolIds } },
+                        { toolId: { $in: missingToolIdStrings } }
+                    ]
+                },
                 { $set: { status: 'Missing' } },
                 session ? { session } : {}
             );
 
             const missingLogs = missingItems.map(item => ({
-                tool: item.tool,
+                tool: item.tool?._id || item.tool,
                 toolIdStr: item.toolId,
                 description: item.description || '',
                 movementType: 'Missing',
-                from: referenceDc.vendor.name,
+                from: referenceDc.vendor?.name || 'Subcontractor',
                 to: 'Missing',
                 referenceNumber: challanNumber,
                 date: new Date(),
@@ -526,12 +645,12 @@ export const createReturnChallan = async (data, user = {}) => {
             await ToolMovement.insertMany(missingLogs, session ? { session } : {});
 
             const missingRecords = missingItems.map(item => ({
-                tool: item.tool,
+                tool: item.tool?._id || item.tool,
                 toolIdStr: item.toolId,
                 description: item.description || '',
                 toolCode: item.toolCode || '',
-                vendor: referenceDc.vendor._id,
-                vendorName: referenceDc.vendor.name,
+                vendor: referenceDc.vendor?._id,
+                vendorName: referenceDc.vendor?.name,
                 dcNumber: referenceDc.challanNumber,
                 rcNumber: challanNumber,
                 missingDate: new Date(),
@@ -543,14 +662,18 @@ export const createReturnChallan = async (data, user = {}) => {
         }
 
         // Audit log
-        const auditLog = new ChallanAuditLog({
-            user: createdBy,
-            action: 'RC Creation',
-            referenceNumber: challanNumber,
-            details: `Created Return Challan ${challanNumber} for DC ${referenceDc.challanNumber} (${returnedItems.length} returned, ${missingItems.length} missing)`,
-            metadata: { returnedCount: returnedItems.length, missingCount: missingItems.length, dcNumber: referenceDc.challanNumber }
-        });
-        await auditLog.save(saveOptions);
+        try {
+            const auditLog = new ChallanAuditLog({
+                user: createdBy,
+                action: 'RC Creation',
+                referenceNumber: challanNumber,
+                details: `Created Return Challan ${challanNumber} for DC ${referenceDc.challanNumber} (${returnedItems.length} returned, ${missingItems.length} missing)`,
+                metadata: { returnedCount: returnedItems.length, missingCount: missingItems.length, dcNumber: referenceDc.challanNumber }
+            });
+            await auditLog.save(saveOptions);
+        } catch (auditErr) {
+            console.error('[createReturnChallan] Audit log warning:', auditErr.message);
+        }
 
         // Update vendor metrics
         await vendorService.updateVendorMetrics(referenceDc.vendor._id, {
@@ -589,7 +712,10 @@ export const getChallans = async (params = {}) => {
                 { 'vendor.name': { $regex: search, $options: 'i' } },
                 { 'vendor.vendorCode': { $regex: search, $options: 'i' } },
                 { remarks: { $regex: search, $options: 'i' } },
-                { referenceDcNumber: { $regex: search, $options: 'i' } }
+                { referenceDcNumber: { $regex: search, $options: 'i' } },
+                { transferFromDcNumber: { $regex: search, $options: 'i' } },
+                { transferredToDcNumber: { $regex: search, $options: 'i' } },
+                { siteCode: { $regex: search, $options: 'i' } }
             ]
         });
     }
@@ -617,7 +743,11 @@ export const getChallans = async (params = {}) => {
     }
 
     if (status && status !== 'All') {
-        conditions.push({ status });
+        if (status === 'Returned' || status === 'Completed') {
+            conditions.push({ status: { $in: ['Returned', 'Completed'] } });
+        } else {
+            conditions.push({ status });
+        }
     }
 
     if (challanType && challanType !== 'All') {
@@ -652,8 +782,13 @@ export const getChallans = async (params = {}) => {
         Challan.countDocuments(query)
     ]);
 
+    const normalizedData = data.map(c => ({
+        ...c,
+        status: (c.status === 'Returned' ? 'Completed' : c.status)
+    }));
+
     return {
-        data,
+        data: normalizedData,
         total,
         page: Number(page),
         limit: Number(limit),
@@ -668,6 +803,9 @@ export const getChallanById = async (id) => {
     const challan = await Challan.findById(id).lean();
     if (!challan) {
         throw new Error('Challan not found');
+    }
+    if (challan.status === 'Returned') {
+        challan.status = 'Completed';
     }
     return challan;
 };

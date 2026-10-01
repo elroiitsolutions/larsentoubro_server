@@ -9,12 +9,13 @@ import profileRoutes from './profile.routes.js';
 import challanRoutes from './challan.routes.js';
 import reportRoutes from './report.routes.js';
 import dashboardRoutes from './dashboard.routes.js';
-import { attachUser } from '../middleware/auth.middleware.js';
+import { attachUser, restrictGuestAccess } from '../middleware/auth.middleware.js';
 
 const router = Router();
 
 // Globally attach req.user if JWT token is present in headers
 router.use(attachUser);
+router.use(restrictGuestAccess);
 
 router.use('/users', userRoutes);
 router.use('/forms', formRoutes);

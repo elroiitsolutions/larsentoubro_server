@@ -8,11 +8,13 @@ import {
     getDeletedTools,
     getScrappedTools,
     markToolsAsPrinted,
+    unmarkToolsAsPrinted,
     restoreToolById,
     bulkRestoreTools,
     permanentDeleteToolById,
     bulkPermanentDeleteTools,
-    transferTools
+    transferTools,
+    lookupToolValidity
 } from '../controllers/tool.controller.js';
 import { authenticate, requireAdmin } from '../middleware/auth.middleware.js';
 
@@ -20,10 +22,14 @@ const router = express.Router();
 
 router.use(authenticate);
 
+// Tool Validity Lookup (Requires JWT Authentication - Guest or User)
+router.get('/lookup-validity', lookupToolValidity);
+
 // Static Trash, Scrap, Print & Bulk Endpoints
 router.get('/trash', requireAdmin, getDeletedTools);
 router.get('/scrap', getScrappedTools);
 router.post('/mark-printed', markToolsAsPrinted);
+router.post('/unmark-printed', unmarkToolsAsPrinted);
 router.post('/bulk-delete', requireAdmin, bulkDeleteTools);
 router.post('/bulk-restore', requireAdmin, bulkRestoreTools);
 router.post('/bulk-permanent-delete', requireAdmin, bulkPermanentDeleteTools);

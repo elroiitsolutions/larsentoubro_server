@@ -6,8 +6,9 @@ import { authenticate, requireAdmin, requirePagePermission } from '../middleware
 
 const router = Router();
 
-// Public login route
+// Public login routes
 router.post('/login', validate(userValidator.loginUser), userController.loginUser);
+router.post('/guest-login', userController.guestLogin);
 
 // Realtime Events Stream (SSE)
 router.get('/events', userController.streamRealtimeEvents);

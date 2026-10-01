@@ -1,7 +1,18 @@
 import jwt from 'jsonwebtoken';
+import mongoose from 'mongoose';
 import { env } from '../config/env.js';
 import { User } from '../models/user.model.js';
 import { Vendor } from '../models/vendor.model.js';
+
+const getGuestUser = (decoded = {}) => ({
+    _id: decoded.id || 'guest_user_id',
+    id: decoded.id || 'guest_user_id',
+    name: decoded.name || 'Guest User',
+    email: decoded.email || 'guest@lnt.com',
+    role: 'Guest',
+    user_id: 'GUEST-001',
+    allowedPages: ['/qr-scanner']
+});
 
 export const attachUser = async (req, res, next) => {
     try {
@@ -13,12 +24,18 @@ export const attachUser = async (req, res, next) => {
 
         if (token) {
             const decoded = jwt.verify(token, env.JWT_SECRET);
-            let user = await User.findById(decoded.id)
-                .populate('projects', 'name code location')
-                .populate('stores', 'name code siteName')
-                .select('-password');
+            let user = null;
 
-            if (!user && (decoded.role === 'Vendor' || decoded.isVendor)) {
+            if (decoded.role === 'Guest') {
+                user = getGuestUser(decoded);
+            } else if (mongoose.Types.ObjectId.isValid(decoded.id)) {
+                user = await User.findById(decoded.id)
+                    .populate('projects', 'name code location')
+                    .populate('stores', 'name code siteName')
+                    .select('-password');
+            }
+
+            if (!user && (decoded.role === 'Vendor' || decoded.isVendor) && mongoose.Types.ObjectId.isValid(decoded.id)) {
                 const vendor = await Vendor.findById(decoded.id)
                     .populate('projects', 'name code location')
                     .populate('stores', 'name code siteName')
@@ -55,6 +72,17 @@ export const attachUser = async (req, res, next) => {
 export const authenticate = async (req, res, next) => {
     try {
         if (req.user) {
+            if (req.user.role === 'Guest') {
+                const path = req.originalUrl.split('?')[0];
+                const allowed = ['/api/users/me', '/api/tools/lookup-validity', '/api/users/guest-login'];
+                const isAllowed = allowed.some(p => path === p || path.startsWith('/api/tools/lookup-validity'));
+                if (!isAllowed) {
+                    return res.status(403).json({
+                        success: false,
+                        message: 'Access denied. Guest users are restricted to the QR Scanner tool lookup only.'
+                    });
+                }
+            }
             return next();
         }
 
@@ -76,12 +104,18 @@ export const authenticate = async (req, res, next) => {
         }
 
         const decoded = jwt.verify(token, env.JWT_SECRET);
-        let user = await User.findById(decoded.id)
-            .populate('projects', 'name code location')
-            .populate('stores', 'name code siteName')
-            .select('-password');
+        let user = null;
 
-        if (!user && (decoded.role === 'Vendor' || decoded.isVendor)) {
+        if (decoded.role === 'Guest') {
+            user = getGuestUser(decoded);
+        } else if (mongoose.Types.ObjectId.isValid(decoded.id)) {
+            user = await User.findById(decoded.id)
+                .populate('projects', 'name code location')
+                .populate('stores', 'name code siteName')
+                .select('-password');
+        }
+
+        if (!user && (decoded.role === 'Vendor' || decoded.isVendor) && mongoose.Types.ObjectId.isValid(decoded.id)) {
             const vendor = await Vendor.findById(decoded.id)
                 .populate('projects', 'name code location')
                 .populate('stores', 'name code siteName')
@@ -112,6 +146,18 @@ export const authenticate = async (req, res, next) => {
             });
         }
 
+        if (user.role === 'Guest') {
+            const path = req.originalUrl.split('?')[0];
+            const allowed = ['/api/users/me', '/api/tools/lookup-validity', '/api/users/guest-login'];
+            const isAllowed = allowed.some(p => path === p || path.startsWith('/api/tools/lookup-validity'));
+            if (!isAllowed) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Access denied. Guest users are restricted to the QR Scanner tool lookup only.'
+                });
+            }
+        }
+
         req.user = user;
         next();
     } catch (error) {
@@ -132,10 +178,39 @@ export const requireAdmin = (req, res, next) => {
     next();
 };
 
+export const restrictGuestAccess = (req, res, next) => {
+    if (req.user && req.user.role === 'Guest') {
+        const allowedPaths = [
+            '/api/users/me',
+            '/api/tools/lookup-validity',
+            '/api/users/guest-login'
+        ];
+        const path = req.originalUrl.split('?')[0];
+        const isAllowed = allowedPaths.some(p => path === p || path.startsWith('/api/tools/lookup-validity'));
+        if (!isAllowed) {
+            return res.status(403).json({
+                success: false,
+                message: 'Access denied. Guest users are restricted to the QR Scanner tool lookup only.'
+            });
+        }
+    }
+    next();
+};
+
 export const requirePagePermission = (pagePrefix) => {
     return (req, res, next) => {
         if (!req.user) {
             return res.status(401).json({ success: false, message: 'Authentication required' });
+        }
+        // Guest users are strictly restricted to /qr-scanner
+        if (req.user.role === 'Guest') {
+            if (pagePrefix === "/qr-scanner") {
+                return next();
+            }
+            return res.status(403).json({
+                success: false,
+                message: "Access denied. Guest users are restricted to the QR Scanner page only."
+            });
         }
         // Admin users have unrestricted access to all pages and features by default
         if (req.user.role === 'Admin') {

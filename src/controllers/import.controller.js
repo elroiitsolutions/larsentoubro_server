@@ -74,7 +74,7 @@ const formatImportDateValue = (val) => {
 /**
  * PREVIEW: Parse xlsx, validate rows, store in ImportJob, return summary + first page.
  * Records are now stored server-side — the client never holds 100K records in memory.
- */
+   */
 const previewStoreToolsImport = async (req, res, next) => {
     try {
         const { storeId } = req.params;
@@ -165,6 +165,18 @@ const previewStoreToolsImport = async (req, res, next) => {
                     } else {
                         toolData.customFields[colDef.name] = stringVal;
                     }
+                }
+            }
+
+            // Automatic Validation Period Generation based on Purchaser Name
+            const purchaserStr = (toolData.purchaserName || '').trim().toLowerCase();
+            const rawValidity = (toolData.validityPeriod || '').trim();
+
+            if (!rawValidity || rawValidity === '' || rawValidity === 'N/A' || rawValidity === '-') {
+                if (purchaserStr === 'third party inspection' || purchaserStr.includes('third party inspection')) {
+                    toolData.validityPeriod = '1 Year';
+                } else {
+                    toolData.validityPeriod = '3 Years';
                 }
             }
 
