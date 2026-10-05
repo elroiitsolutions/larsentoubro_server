@@ -60,6 +60,12 @@ const profileSchema = new mongoose.Schema({
         default: {}
     },
     documents: [documentSchema],
+    createdBy: {
+        _id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        name: { type: String, default: 'Admin' },
+        email: { type: String, default: '' },
+        role: { type: String, default: 'Admin' }
+    },
     metrics: {
         dcCount: { type: Number, default: 0 },
         rcCount: { type: Number, default: 0 },

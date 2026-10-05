@@ -346,9 +346,6 @@ export const createScrapDeliveryChallan = async (data, user = {}) => {
     }
 
     const cleanSiteCode = typeof siteCode === 'string' ? siteCode.trim() : '';
-    if (!cleanSiteCode) {
-        throw new Error('Site Code is required to create a Scrap Delivery Challan');
-    }
 
     if (!scrapDealerId) {
         throw new Error('Scrap Dealer selection is required');
@@ -389,8 +386,9 @@ export const createScrapDeliveryChallan = async (data, user = {}) => {
         const challan = new Challan({
             challanNumber,
             challanType: 'Delivery',
+            isScrapDC: true,
             status: 'Completed',
-            siteCode: cleanSiteCode,
+            siteCode: cleanSiteCode || '',
             vendorCode: scrapDealerSnapshot.vendorCode,
             subcontractorName: scrapDealerSnapshot.name,
             locationChainage,
