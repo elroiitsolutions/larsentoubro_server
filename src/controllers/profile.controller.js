@@ -43,7 +43,7 @@ export const upload = multer({
 
 export const getProfiles = async (req, res, next) => {
     try {
-        const result = await profileService.getProfiles(req.query);
+        const result = await profileService.getProfiles(req.query, req.user);
         res.status(200).json({ success: true, ...result });
     } catch (error) {
         next(error);
@@ -52,7 +52,7 @@ export const getProfiles = async (req, res, next) => {
 
 export const getProfileById = async (req, res, next) => {
     try {
-        const profile = await profileService.getProfileById(req.params.id);
+        const profile = await profileService.getProfileById(req.params.id, req.user);
         res.status(200).json({ success: true, data: profile });
     } catch (error) {
         next(error);
@@ -61,7 +61,7 @@ export const getProfileById = async (req, res, next) => {
 
 export const createProfile = async (req, res, next) => {
     try {
-        const profile = await profileService.createProfile(req.body);
+        const profile = await profileService.createProfile(req.body, req.user);
         res.status(201).json({ success: true, data: profile });
     } catch (error) {
         next(error);
@@ -70,7 +70,7 @@ export const createProfile = async (req, res, next) => {
 
 export const updateProfile = async (req, res, next) => {
     try {
-        const profile = await profileService.updateProfile(req.params.id, req.body);
+        const profile = await profileService.updateProfile(req.params.id, req.body, req.user);
         res.status(200).json({ success: true, data: profile });
     } catch (error) {
         next(error);
@@ -79,7 +79,7 @@ export const updateProfile = async (req, res, next) => {
 
 export const deleteProfile = async (req, res, next) => {
     try {
-        const profile = await profileService.deleteProfile(req.params.id);
+        const profile = await profileService.deleteProfile(req.params.id, req.user);
         res.status(200).json({ success: true, message: 'Profile deleted successfully', data: profile });
     } catch (error) {
         next(error);
