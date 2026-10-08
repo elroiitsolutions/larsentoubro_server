@@ -46,9 +46,10 @@ router.get('/tools/bulk-import/sample', importController.downloadStoreToolsSampl
 router.post('/:storeId/tools/bulk-import/preview', upload.single('file'), importController.previewStoreToolsImport);
 router.post('/:storeId/tools/bulk-import/commit', importController.commitStoreToolsImport);
 
-// Import Job Endpoints (for paginated preview + progress tracking)
-router.get('/:storeId/tools/bulk-import/jobs/:jobId', importController.getImportJobStatus);
+// Import Job Endpoints (for paginated preview + progress tracking + QR code generation)
+router.get('/:storeId/tools/bulk-import/jobs/:jobId', importController.getImportedJobTools);
 router.get('/:storeId/tools/bulk-import/jobs/:jobId/records', importController.getImportJobRecords);
 router.get('/:storeId/tools/bulk-import/jobs/:jobId/progress', importController.streamImportJobProgress);
+router.get('/:storeId/tools/bulk-import/jobs/:jobId/imported-tools', importController.getImportedJobTools);
 
 export default router;

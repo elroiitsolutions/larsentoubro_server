@@ -87,6 +87,7 @@ export const processImportJob = async (jobId, targetStore) => {
         let totalFailed = 0;
         let allFailedRows = [];
         let processedSoFar = 0;
+        let allCreatedToolIds = [];
 
         // Process in batches
         for (let batchStart = 0; batchStart < totalToProcess; batchStart += BATCH_SIZE) {
@@ -138,8 +139,13 @@ export const processImportJob = async (jobId, targetStore) => {
 
             // Insert this batch
             try {
-                await Tool.insertMany(toolsToInsert, { ordered: false });
-                totalSuccess += toolsToInsert.length;
+                const insertedDocs = await Tool.insertMany(toolsToInsert, { ordered: false });
+                totalSuccess += insertedDocs.length;
+                if (Array.isArray(insertedDocs)) {
+                    insertedDocs.forEach(t => {
+                        if (t.toolId) allCreatedToolIds.push(t.toolId);
+                    });
+                }
             } catch (err) {
                 if (err.writeErrors || err.result) {
                     // Partial success with ordered: false
@@ -147,6 +153,12 @@ export const processImportJob = async (jobId, targetStore) => {
                         (err.result?.nInserted ?? (toolsToInsert.length - (err.writeErrors?.length || 0)));
                     totalSuccess += insertedCount;
                     
+                    if (err.insertedDocs && Array.isArray(err.insertedDocs)) {
+                        err.insertedDocs.forEach(t => {
+                            if (t.toolId) allCreatedToolIds.push(t.toolId);
+                        });
+                    }
+
                     if (err.writeErrors) {
                         for (const we of err.writeErrors) {
                             const originalBatchIdx = we.index;
@@ -176,11 +188,13 @@ export const processImportJob = async (jobId, targetStore) => {
 
             // Update job progress in DB
             await ImportJob.findByIdAndUpdate(jobId, {
+                createdToolIds: allCreatedToolIds,
                 'progress.processedCount': processedSoFar,
                 'progress.successCount': totalSuccess,
                 'progress.failedCount': totalFailed,
                 'progress.failedRows': allFailedRows.slice(-100), // Keep last 100 for display
-                'progress.percentage': percentage
+                'progress.percentage': percentage,
+                'progress.createdToolIds': allCreatedToolIds
             });
 
             // Emit SSE progress event
@@ -192,7 +206,8 @@ export const processImportJob = async (jobId, targetStore) => {
                     failedCount: totalFailed,
                     totalToProcess,
                     percentage,
-                    failedRows: allFailedRows.slice(-10) // Send last 10 in SSE
+                    failedRows: allFailedRows.slice(-10), // Send last 10 in SSE
+                    createdToolIds: allCreatedToolIds
                 }
             });
         }
@@ -201,11 +216,13 @@ export const processImportJob = async (jobId, targetStore) => {
         await ImportJob.findByIdAndUpdate(jobId, {
             status: 'completed',
             completedAt: new Date(),
+            createdToolIds: allCreatedToolIds,
             'progress.processedCount': processedSoFar,
             'progress.successCount': totalSuccess,
             'progress.failedCount': totalFailed,
             'progress.failedRows': allFailedRows,
-            'progress.percentage': 100
+            'progress.percentage': 100,
+            'progress.createdToolIds': allCreatedToolIds
         });
 
         emitProgress(jobId, {
@@ -216,7 +233,8 @@ export const processImportJob = async (jobId, targetStore) => {
                 failedCount: totalFailed,
                 totalToProcess,
                 percentage: 100,
-                failedRows: allFailedRows
+                failedRows: allFailedRows,
+                createdToolIds: allCreatedToolIds
             }
         });
 

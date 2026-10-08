@@ -1,4 +1,5 @@
 import * as xlsx from 'xlsx';
+import QRCode from 'qrcode';
 import { Tool } from '../models/tool.model.js';
 import { Project } from '../models/project.model.js';
 import { Store } from '../models/store.model.js';
@@ -372,11 +373,78 @@ const streamImportJobProgress = async (req, res, next) => {
     }
 };
 
+/**
+ * GET created tools for an import job, with QR Code data URLs.
+ */
+const getImportedJobTools = async (req, res, next) => {
+    try {
+        const { storeId, jobId } = req.params;
+        const job = await ImportJob.findById(jobId).lean();
+        if (!job) {
+            return res.status(404).json({ success: false, message: 'Import job not found' });
+        }
+
+        const toolIds = job.createdToolIds || job.progress?.createdToolIds || [];
+        let tools = [];
+
+        if (toolIds.length > 0) {
+            tools = await Tool.find({
+                toolId: { $in: toolIds },
+                isDeleted: { $ne: true }
+            })
+            .populate('project', 'name code')
+            .populate('currentSite', 'name siteName code')
+            .lean();
+        } else {
+            // Fallback: fetch tools created in the store around job creation time
+            tools = await Tool.find({
+                currentSite: storeId,
+                createdAt: { $gte: job.createdAt },
+                isDeleted: { $ne: true }
+            })
+            .sort({ createdAt: -1 })
+            .limit(job.progress?.successCount || 100)
+            .populate('project', 'name code')
+            .populate('currentSite', 'name siteName code')
+            .lean();
+        }
+
+        // Generate base64 Data URLs for QR codes
+        const toolsWithQr = await Promise.all(tools.map(async (t) => {
+            const qrLink = t.qrLink || ToolIdGenerator.generateQrLink(t.toolId);
+            let qrCodeDataUrl = '';
+            try {
+                qrCodeDataUrl = await QRCode.toDataURL(qrLink, {
+                    errorCorrectionLevel: 'H',
+                    margin: 1,
+                    width: 256,
+                    color: { light: '#00000000' }
+                });
+            } catch (err) {
+                console.error(`QR Code generation failed for ${t.toolId}:`, err);
+            }
+            return {
+                ...t,
+                qrLink,
+                qrCodeDataUrl
+            };
+        }));
+
+        return res.status(200).json({
+            success: true,
+            data: toolsWithQr
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
 export const importController = {
     previewStoreToolsImport,
     commitStoreToolsImport,
     downloadStoreToolsSample,
     getImportJobRecords,
     getImportJobStatus,
-    streamImportJobProgress
+    streamImportJobProgress,
+    getImportedJobTools
 };

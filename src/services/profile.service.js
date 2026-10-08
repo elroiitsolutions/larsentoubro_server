@@ -1,7 +1,7 @@
 import { Profile } from '../models/profile.model.js';
 import mongoose from 'mongoose';
 
-export const getProfiles = async (params = {}) => {
+export const getProfiles = async (params = {}, user = null) => {
     const { profileType, page = 1, limit = 50, search = '', status = 'All' } = params;
 
     const query = {};
@@ -14,8 +14,40 @@ export const getProfiles = async (params = {}) => {
         query.status = status;
     }
 
+    // Role-based visibility isolation:
+    // If not Admin, user can only see:
+    // 1. Profiles created by an Admin (or legacy profiles without createdBy / createdBy.role == 'Admin')
+    // 2. Profiles created by themselves (matched by _id, name, username, or email)
+    // Profiles created by OTHER users are NOT visible to them.
+    if (user && user.role !== 'Admin') {
+        const userScopeConditions = [
+            { 'createdBy.role': 'Admin' },
+            { 'createdBy': { $exists: false } },
+            { 'createdBy': null },
+            { 'createdBy.role': { $exists: false } }
+        ];
+
+        if (user._id) {
+            userScopeConditions.push({ 'createdBy._id': user._id });
+            if (mongoose.Types.ObjectId.isValid(user._id)) {
+                userScopeConditions.push({ 'createdBy._id': new mongoose.Types.ObjectId(user._id) });
+            }
+        }
+        if (user.name) {
+            userScopeConditions.push({ 'createdBy.name': user.name });
+        }
+        if (user.username) {
+            userScopeConditions.push({ 'createdBy.name': user.username });
+        }
+        if (user.email) {
+            userScopeConditions.push({ 'createdBy.email': user.email });
+        }
+
+        query.$and = [{ $or: userScopeConditions }];
+    }
+
     if (search) {
-        query.$or = [
+        const searchConditions = [
             { name: { $regex: search, $options: 'i' } },
             { code: { $regex: search, $options: 'i' } },
             { contactPerson: { $regex: search, $options: 'i' } },
@@ -25,6 +57,12 @@ export const getProfiles = async (params = {}) => {
             { panNumber: { $regex: search, $options: 'i' } },
             { licenseNumber: { $regex: search, $options: 'i' } }
         ];
+
+        if (query.$and) {
+            query.$and.push({ $or: searchConditions });
+        } else {
+            query.$or = searchConditions;
+        }
     }
 
     const skip = (Number(page) - 1) * Number(limit);
@@ -49,7 +87,7 @@ export const getProfiles = async (params = {}) => {
     };
 };
 
-export const getProfileById = async (id) => {
+export const getProfileById = async (id, user = null) => {
     if (!mongoose.Types.ObjectId.isValid(id)) {
         throw new Error('Invalid Profile ID');
     }
@@ -60,6 +98,21 @@ export const getProfileById = async (id) => {
     if (!profile) {
         throw new Error('Profile not found');
     }
+
+    if (user && user.role !== 'Admin') {
+        const isAdminCreated = !profile.createdBy || profile.createdBy.role === 'Admin' || !profile.createdBy.role;
+        const isSelfCreated = profile.createdBy && (
+            (profile.createdBy._id && profile.createdBy._id.toString() === user._id?.toString()) ||
+            (profile.createdBy.email && user.email && profile.createdBy.email.toLowerCase() === user.email.toLowerCase()) ||
+            (profile.createdBy.name && user.name && profile.createdBy.name.toLowerCase() === user.name.toLowerCase()) ||
+            (profile.createdBy.name && user.username && profile.createdBy.name.toLowerCase() === user.username.toLowerCase())
+        );
+
+        if (!isAdminCreated && !isSelfCreated) {
+            throw new Error('Unauthorized to view this profile');
+        }
+    }
+
     return profile;
 };
 
@@ -74,7 +127,7 @@ export const generateProfileCode = async (profileType) => {
     return `${prefix}-${String(count + 1).padStart(4, '0')}`;
 };
 
-export const createProfile = async (data) => {
+export const createProfile = async (data, user = {}) => {
     if (!data.profileType || !['Subcontractor', 'ScrapDealer', 'Supplier'].includes(data.profileType)) {
         throw new Error('Valid profileType (Subcontractor, ScrapDealer, Supplier) is required');
     }
@@ -89,12 +142,21 @@ export const createProfile = async (data) => {
         throw new Error(`${data.profileType} code '${code}' already exists`);
     }
 
+    const creatorUser = (user && user._id) ? user : (data.createdBy || {});
+    const createdBy = {
+        _id: creatorUser._id || null,
+        name: creatorUser.name || creatorUser.username || data.createdBy?.name || 'Admin',
+        email: creatorUser.email || data.createdBy?.email || '',
+        role: creatorUser.role || data.createdBy?.role || 'Admin'
+    };
+
     const profilePayload = {
         ...data,
         code,
         name: data.name ? data.name.trim() : 'Unnamed Profile',
         gstNumber: data.gstNumber ? data.gstNumber.trim().toUpperCase() : '',
-        panNumber: data.panNumber ? data.panNumber.trim().toUpperCase() : ''
+        panNumber: data.panNumber ? data.panNumber.trim().toUpperCase() : '',
+        createdBy: (user && user._id) ? createdBy : (data.createdBy && data.createdBy.name ? data.createdBy : createdBy)
     };
 
     const profile = new Profile(profilePayload);
@@ -104,9 +166,25 @@ export const createProfile = async (data) => {
         .populate('stores', 'name location');
 };
 
-export const updateProfile = async (id, data) => {
+export const updateProfile = async (id, data, user = null) => {
     // Prevent modification of profileType or password fields
     delete data.password;
+
+    if (user && user.role !== 'Admin') {
+        const existing = await Profile.findById(id).lean();
+        if (!existing) {
+            throw new Error('Profile not found');
+        }
+        const isSelfCreated = existing.createdBy && (
+            (existing.createdBy._id && existing.createdBy._id.toString() === user._id?.toString()) ||
+            (existing.createdBy.email && user.email && existing.createdBy.email.toLowerCase() === user.email.toLowerCase()) ||
+            (existing.createdBy.name && user.name && existing.createdBy.name.toLowerCase() === user.name.toLowerCase()) ||
+            (existing.createdBy.name && user.username && existing.createdBy.name.toLowerCase() === user.username.toLowerCase())
+        );
+        if (!isSelfCreated) {
+            throw new Error('Unauthorized to modify this profile');
+        }
+    }
 
     const profile = await Profile.findByIdAndUpdate(id, data, { new: true, runValidators: true })
         .populate('projects', 'name projectCode location')
@@ -117,7 +195,23 @@ export const updateProfile = async (id, data) => {
     return profile;
 };
 
-export const deleteProfile = async (id) => {
+export const deleteProfile = async (id, user = null) => {
+    if (user && user.role !== 'Admin') {
+        const existing = await Profile.findById(id).lean();
+        if (!existing) {
+            throw new Error('Profile not found');
+        }
+        const isSelfCreated = existing.createdBy && (
+            (existing.createdBy._id && existing.createdBy._id.toString() === user._id?.toString()) ||
+            (existing.createdBy.email && user.email && existing.createdBy.email.toLowerCase() === user.email.toLowerCase()) ||
+            (existing.createdBy.name && user.name && existing.createdBy.name.toLowerCase() === user.name.toLowerCase()) ||
+            (existing.createdBy.name && user.username && existing.createdBy.name.toLowerCase() === user.username.toLowerCase())
+        );
+        if (!isSelfCreated) {
+            throw new Error('Unauthorized to delete this profile');
+        }
+    }
+
     const profile = await Profile.findByIdAndDelete(id);
     if (!profile) {
         throw new Error('Profile not found');
