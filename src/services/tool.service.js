@@ -7,59 +7,141 @@ import ToolIdGenerator from '../utils/tool-id.js';
 import * as XLSX from 'xlsx';
 
 const applyAdvancedFilters = (query, params) => {
-    if (params.search) {
+    if (params.search && String(params.search).trim()) {
         if (!query.$and) query.$and = [];
+        const escapedSearch = String(params.search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         query.$and.push({
             $or: [
-                { description: { $regex: params.search, $options: 'i' } },
-                { toolId: { $regex: params.search, $options: 'i' } },
-                { toolCode: { $regex: params.search, $options: 'i' } }
+                { description: { $regex: escapedSearch, $options: 'i' } },
+                { toolId: { $regex: escapedSearch, $options: 'i' } },
+                { toolCode: { $regex: escapedSearch, $options: 'i' } }
             ]
         });
     }
 
-    if (params.category && params.category !== 'All') {
-        query.toolType = { $regex: `^${params.category.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' };
+    if (params.category && params.category !== 'All' && String(params.category).trim()) {
+        const escapedCat = String(params.category).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        query.toolType = { $regex: escapedCat, $options: 'i' };
     }
 
-    if (params.status && params.status !== 'All') {
-        query.status = { $regex: `^${params.status.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' };
+    if (params.status && params.status !== 'All' && String(params.status).trim()) {
+        const escapedStat = String(params.status).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        query.status = { $regex: escapedStat, $options: 'i' };
     }
 
     const printVal = params.printStatus || params.isPrinted;
-    if (printVal && printVal !== 'All') {
-        if (printVal === 'Printed' || printVal === 'true' || printVal === true) {
+    if (printVal && printVal !== 'All' && String(printVal).trim()) {
+        const strVal = String(printVal).trim().toLowerCase();
+        if (strVal === 'printed' || strVal === 'true') {
             query.isPrinted = true;
-        } else if (printVal === 'Not Printed' || printVal === 'Unprinted' || printVal === 'false' || printVal === false) {
+        } else if (strVal === 'not printed' || strVal === 'unprinted' || strVal === 'false') {
             query.isPrinted = { $ne: true };
+        }
+    }
+
+    // Special handling for Validation / Validity / validityPeriod
+    const validityVal = params.validityPeriod || params.validation || params.validity;
+    if (validityVal && validityVal !== 'All' && String(validityVal).trim() !== '') {
+        const strVal = String(validityVal).trim();
+        const yearsMatch = strVal.match(/(\d+)/);
+        if (!query.$and) query.$and = [];
+
+        if (yearsMatch) {
+            const num = parseInt(yearsMatch[1], 10);
+            const regexNumPattern = `(${num}\\s*year|${num}\\s*years|${num}\\s*yr|\\b${num}\\b)`;
+            if (num === 1) {
+                query.$and.push({
+                    $or: [
+                        { validityPeriod: { $regex: regexNumPattern, $options: 'i' } },
+                        { validation: { $regex: regexNumPattern, $options: 'i' } },
+                        { 'customFields.validation': { $regex: regexNumPattern, $options: 'i' } },
+                        { 'customFields.validityPeriod': { $regex: regexNumPattern, $options: 'i' } },
+                        {
+                            $and: [
+                                {
+                                    $or: [
+                                        { validityPeriod: { $in: [null, '', 'N/A', '-'] } },
+                                        { validityPeriod: { $exists: false } }
+                                    ]
+                                },
+                                {
+                                    $or: [
+                                        { purchaserName: { $regex: 'third party inspection', $options: 'i' } },
+                                        { 'customFields.purchaserName': { $regex: 'third party inspection', $options: 'i' } }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                });
+            } else if (num === 3) {
+                query.$and.push({
+                    $or: [
+                        { validityPeriod: { $regex: regexNumPattern, $options: 'i' } },
+                        { validation: { $regex: regexNumPattern, $options: 'i' } },
+                        { 'customFields.validation': { $regex: regexNumPattern, $options: 'i' } },
+                        { 'customFields.validityPeriod': { $regex: regexNumPattern, $options: 'i' } },
+                        {
+                            $and: [
+                                {
+                                    $or: [
+                                        { validityPeriod: { $in: [null, '', 'N/A', '-'] } },
+                                        { validityPeriod: { $exists: false } }
+                                    ]
+                                },
+                                {
+                                    $or: [
+                                        { purchaserName: { $not: /third party inspection/i } },
+                                        { purchaserName: { $exists: false } }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                });
+            } else {
+                query.$and.push({
+                    $or: [
+                        { validityPeriod: { $regex: regexNumPattern, $options: 'i' } },
+                        { validation: { $regex: regexNumPattern, $options: 'i' } },
+                        { 'customFields.validation': { $regex: regexNumPattern, $options: 'i' } },
+                        { 'customFields.validityPeriod': { $regex: regexNumPattern, $options: 'i' } }
+                    ]
+                });
+            }
+        } else {
+            const escapedVal = strVal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            query.$and.push({
+                $or: [
+                    { validityPeriod: { $regex: escapedVal, $options: 'i' } },
+                    { validation: { $regex: escapedVal, $options: 'i' } },
+                    { 'customFields.validation': { $regex: escapedVal, $options: 'i' } },
+                    { 'customFields.validityPeriod': { $regex: escapedVal, $options: 'i' } }
+                ]
+            });
         }
     }
 
     const filterFields = [
         'description', 'toolId', 'toolCode', 'toolType', 'status', 'makeYear',
         'capacity', 'safeWorkingLoad', 'metalType', 'toolVariant',
-        'dateOfSupply', 'validityPeriod', 'purchaserName', 'purchaserContact',
-        'supplierCode', 'jobCode', 'remarks'
+        'dateOfSupply', 'purchaserName', 'purchaserContact',
+        'supplierCode', 'jobCode', 'jobDescription', 'remarks', 'subcontractorName'
     ];
 
     for (const field of filterFields) {
         if (field === 'toolType' && query.toolType) continue;
         if (field === 'status' && query.status) continue;
         const val = params[field];
-        if (val && val !== 'All' && val !== '' && val !== undefined) {
-            if (field === 'validityPeriod') {
-                if (!query.$and) query.$and = [];
-                const escapedVal = val.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                query.$and.push({
-                    $or: [
-                        { validityPeriod: { $regex: escapedVal, $options: 'i' } },
-                        { 'customFields.validation': { $regex: escapedVal, $options: 'i' } },
-                        { 'customFields.validityPeriod': { $regex: escapedVal, $options: 'i' } }
-                    ]
-                });
-            } else {
-                query[field] = { $regex: val.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
-            }
+        if (val && val !== 'All' && String(val).trim() !== '' && val !== undefined) {
+            const escapedVal = String(val).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            if (!query.$and) query.$and = [];
+            query.$and.push({
+                $or: [
+                    { [field]: { $regex: escapedVal, $options: 'i' } },
+                    { [`customFields.${field}`]: { $regex: escapedVal, $options: 'i' } }
+                ]
+            });
         }
     }
 };
@@ -1011,11 +1093,16 @@ const exportToolsByStoreId = async (storeId, params = {}) => {
 };
 
 const getToolById = async (id) => {
-    let query = { toolId: id };
+    if (!id) return null;
+    const escaped = String(id).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const searchConditions = [
+        { toolId: { $regex: `^${escaped}$`, $options: 'i' } },
+        { toolCode: { $regex: `^${escaped}$`, $options: 'i' } }
+    ];
     if (mongoose.Types.ObjectId.isValid(id)) {
-        query = { $or: [{ _id: id }, { toolId: id }] };
+        searchConditions.push({ _id: id });
     }
-    return await Tool.findOne(query).populate('project').populate('currentSite').lean();
+    return await Tool.findOne({ $or: searchConditions, isDeleted: { $ne: true } }).populate('project').populate('currentSite').lean();
 };
 
 const getToolFilterOptions = async (storeId) => {
@@ -1209,6 +1296,12 @@ const transferTools = async ({ sourceStoreId, destinationStoreId, toolIds, remar
     const toolsToTransfer = await Tool.find(query);
     if (!toolsToTransfer || toolsToTransfer.length === 0) {
         throw new Error('No active eligible tools found in source store for transfer');
+    }
+
+    const unprintedTools = toolsToTransfer.filter(t => !t.isPrinted);
+    if (unprintedTools.length > 0) {
+        const unprintedLabels = unprintedTools.map(t => t.toolId || t.toolCode || t.description || t._id.toString()).join(', ');
+        throw new Error(`Cannot transfer tools: Tool(s) [${unprintedLabels}] are not marked as Printed. All selected tools must be printed before performing an inter-store Transfer.`);
     }
 
     const transferRef = `TRF-${Date.now()}`;

@@ -512,8 +512,17 @@ export const parseFlexibleDate = (raw) => {
 };
 
 export const computeToolValidityAndStatus = (tool) => {
+    if (!tool) {
+        return {
+            validityStatus: 'INVALID_EXPIRY',
+            validityLabel: 'No Expiry Date',
+            isValid: false,
+            expiryDateFormatted: 'Date Missing or Unconfigured'
+        };
+    }
+
     // 1. Check explicit nextInspectionDueDate
-    let expiryDateObj = parseFlexibleDate(tool.nextInspectionDueDate);
+    let expiryDateObj = parseFlexibleDate(tool.nextInspectionDueDate || tool.customFields?.nextInspectionDueDate);
 
     // 2. Resolve start date (validationStartDate -> dateOfSupply -> createdAt)
     let startDateObj = parseFlexibleDate(tool.validationStartDate || tool.customFields?.validationStartDate);
@@ -526,27 +535,26 @@ export const computeToolValidityAndStatus = (tool) => {
 
     // 3. Resolve validation period (1 Year or 3 Years)
     let rawValidity = tool.validityPeriod || tool.validation || tool.customFields?.validation || tool.customFields?.validityPeriod;
-    if (!rawValidity || rawValidity === 'N/A' || String(rawValidity).trim() === '' || String(rawValidity).trim() === '-') {
-        const purchaserStr = (tool.purchaserName || tool.customFields?.purchaserName || '').trim().toLowerCase();
-        if (purchaserStr === 'third party inspection' || purchaserStr.includes('third party inspection')) {
-            rawValidity = '1 Year';
-        } else {
-            rawValidity = '3 Years';
+    if (typeof rawValidity === 'string') rawValidity = rawValidity.trim();
+
+    let years = null;
+    if (rawValidity && rawValidity !== 'N/A' && rawValidity !== '-' && rawValidity !== '') {
+        const yearsMatch = String(rawValidity).match(/(\d+)/);
+        if (yearsMatch) {
+            years = parseInt(yearsMatch[1], 10);
         }
     }
 
-    let years = 3;
-    const yearsMatch = String(rawValidity).match(/(\d+)/);
-    if (yearsMatch) {
-        years = parseInt(yearsMatch[1], 10);
-    } else {
-        const purchaserStr = (tool.purchaserName || tool.customFields?.purchaserName || '').trim().toLowerCase();
+    if (years === null) {
+        const purchaserStr = String(tool.purchaserName || tool.customFields?.purchaserName || '').trim().toLowerCase();
         if (purchaserStr === 'third party inspection' || purchaserStr.includes('third party inspection')) {
             years = 1;
+        } else {
+            years = 3;
         }
     }
 
-    if (!expiryDateObj && startDateObj) {
+    if (!expiryDateObj && startDateObj && years) {
         const computed = new Date(startDateObj);
         computed.setFullYear(computed.getFullYear() + years);
         expiryDateObj = computed;
@@ -564,7 +572,7 @@ export const computeToolValidityAndStatus = (tool) => {
     const yyyy = expiryDateObj.getFullYear();
     const mm = String(expiryDateObj.getMonth() + 1).padStart(2, '0');
     const dd = String(expiryDateObj.getDate()).padStart(2, '0');
-    const expiryDateFormatted = `${yyyy}-${mm}-${dd}`;
+    const expiryDateFormatted = `${mm}/${dd}/${yyyy}`;
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);

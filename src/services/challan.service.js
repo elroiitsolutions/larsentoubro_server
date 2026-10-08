@@ -148,6 +148,13 @@ export const createDeliveryChallan = async (data, user = {}) => {
     const toolIds = items.map(i => i.tool);
     const toolsToCheck = await Tool.find({ _id: { $in: toolIds } });
 
+    // Ensure all tools are printed before allowing DC creation
+    const unprintedTools = toolsToCheck.filter(t => !t.isPrinted);
+    if (unprintedTools.length > 0) {
+        const unprintedLabels = unprintedTools.map(t => t.toolId || t.toolCode || t.description || t._id.toString()).join(', ');
+        throw new Error(`Cannot create Delivery Challan: Tool(s) [${unprintedLabels}] are not marked as Printed. All selected tools must be printed before creating a Delivery Challan.`);
+    }
+
     // When transferring, tools are already dispatched on source DC so status is expected to be Moving
     if (!sourceDc) {
         const invalidMoving = toolsToCheck.filter(t => t.status === 'Moving');
@@ -361,6 +368,14 @@ export const createScrapDeliveryChallan = async (data, user = {}) => {
 
     if (!scrapDealer) {
         throw new Error('Selected Scrap Dealer profile not found');
+    }
+
+    const toolIds = items.map(i => i.tool);
+    const toolsToCheck = await Tool.find({ _id: { $in: toolIds } });
+    const unprintedTools = toolsToCheck.filter(t => !t.isPrinted);
+    if (unprintedTools.length > 0) {
+        const unprintedLabels = unprintedTools.map(t => t.toolId || t.toolCode || t.description || t._id.toString()).join(', ');
+        throw new Error(`Cannot create Scrap Delivery Challan: Tool(s) [${unprintedLabels}] are not marked as Printed. All selected tools must be printed before moving tools to Scrap.`);
     }
 
     return await runInTransaction(async (session) => {

@@ -21,13 +21,16 @@ const importJobSchema = new mongoose.Schema({
     columns: { type: Array, default: [] },
     // All parsed records stored server-side (valid + invalid for review)
     records: { type: Array, default: [] },
+    // Created Tool IDs from this import job
+    createdToolIds: { type: Array, default: [] },
     // Import progress tracking
     progress: {
         processedCount: { type: Number, default: 0 },
         successCount: { type: Number, default: 0 },
         failedCount: { type: Number, default: 0 },
         failedRows: { type: Array, default: [] },
-        percentage: { type: Number, default: 0 }
+        percentage: { type: Number, default: 0 },
+        createdToolIds: { type: Array, default: [] }
     },
     // Metadata
     originalFileName: { type: String },
