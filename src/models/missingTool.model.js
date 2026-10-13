@@ -5,6 +5,8 @@ const missingToolSchema = new mongoose.Schema({
     toolIdStr: { type: String, required: true, index: true },
     description: { type: String, default: '' },
     toolCode: { type: String, default: '' },
+    project: { type: mongoose.Schema.Types.ObjectId, ref: 'Project', required: false, index: true },
+    store: { type: mongoose.Schema.Types.ObjectId, ref: 'Store', required: false, index: true },
     vendor: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor', required: false, index: true },
     vendorName: { type: String, default: '' },
     dcNumber: { type: String, default: '', index: true },

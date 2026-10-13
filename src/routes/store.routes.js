@@ -9,6 +9,7 @@ import {
 } from '../controllers/store.controller.js';
 import {
     getToolsByStoreId,
+    getToolById,
     createToolInStore,
     exportToolsByStoreId,
     getToolFilterOptions,
@@ -34,6 +35,7 @@ router.delete('/:id', requireAdmin, deleteStore);
 // Store-Scoped Tool Endpoints (/api/stores/:storeId/tools)
 router.get('/:storeId/tools/export', exportToolsByStoreId);
 router.get('/:storeId/tools/filter-options', getToolFilterOptions);
+router.get('/:storeId/tools/:toolId', getToolById);
 router.get('/:storeId/tools', getToolsByStoreId);
 router.post('/:storeId/tools', createToolInStore);
 router.post('/:storeId/tools/bulk-edit', requireAdmin, bulkEditTools);

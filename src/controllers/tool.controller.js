@@ -6,6 +6,9 @@ import { Tool } from '../models/tool.model.js';
 export const lookupToolValidity = async (req, res, next) => {
     try {
         const rawCode = (req.query.code || req.query.toolId || req.query.qrCode || req.body.code || '').trim();
+        const storeId = req.query.storeId || req.body.storeId;
+        const projectId = req.query.projectId || req.body.projectId;
+
         if (!rawCode) {
             return res.status(400).json({
                 success: false,
@@ -22,22 +25,58 @@ export const lookupToolValidity = async (req, res, next) => {
         }
         cleanedCode = decodeURIComponent(cleanedCode).trim();
 
+        const escapedCode = cleanedCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const searchConditions = [
-            { toolId: { $regex: `^${cleanedCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } },
-            { toolCode: { $regex: `^${cleanedCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } },
-            { qrLink: { $regex: cleanedCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' } }
+            { toolId: { $regex: `^${escapedCode}$`, $options: 'i' } },
+            { toolCode: { $regex: `^${escapedCode}$`, $options: 'i' } },
+            { toolId: { $regex: `${escapedCode}$`, $options: 'i' } },
+            { toolCode: { $regex: `${escapedCode}$`, $options: 'i' } },
+            { qrLink: { $regex: escapedCode, $options: 'i' } }
         ];
+
+        const numVal = parseInt(cleanedCode, 10);
+        if (!isNaN(numVal) && numVal > 0 && /^\d+$/.test(cleanedCode)) {
+            searchConditions.push({ serialNumber: numVal });
+            searchConditions.push({ originalSerialNumber: numVal });
+        }
 
         if (mongoose.Types.ObjectId.isValid(cleanedCode)) {
             searchConditions.push({ _id: cleanedCode });
         }
 
-        const tool = await Tool.findOne({
-            $or: searchConditions,
-            isDeleted: { $ne: true }
-        })
+        const andConditions = [
+            { $or: searchConditions },
+            { isDeleted: { $ne: true } }
+        ];
+
+        if (storeId && mongoose.Types.ObjectId.isValid(storeId)) {
+            andConditions.push({
+                $or: [
+                    { currentSite: storeId },
+                    { store: storeId }
+                ]
+            });
+        }
+
+        if (projectId && mongoose.Types.ObjectId.isValid(projectId)) {
+            andConditions.push({ project: projectId });
+        }
+
+        const candidates = await Tool.find({ $and: andConditions })
         .populate('project', 'name code')
         .populate('currentSite', 'name siteName code');
+
+        let tool = null;
+        if (candidates && candidates.length > 0) {
+            const lowerCode = cleanedCode.toLowerCase();
+            tool = candidates.find(t => 
+                (t.toolId && t.toolId.toLowerCase() === lowerCode) || 
+                (t.toolCode && t.toolCode.toLowerCase() === lowerCode)
+            ) || candidates.find(t => 
+                (t.toolId && t.toolId.toLowerCase().endsWith(lowerCode)) || 
+                (t.toolCode && t.toolCode.toLowerCase().endsWith(lowerCode))
+            ) || (!isNaN(numVal) ? candidates.find(t => t.serialNumber === numVal || t.originalSerialNumber === numVal) : null) || candidates[0];
+        }
 
         if (!tool) {
             return res.status(404).json({
@@ -231,6 +270,26 @@ export const getScrappedTools = async (req, res, next) => {
     }
 };
 
+export const bulkScrapTools = async (req, res, next) => {
+    try {
+        if (req.user && req.user.role === 'Vendor') {
+            return res.status(403).json({ success: false, message: 'Access denied. Vendors cannot scrap tools.' });
+        }
+        const { toolIds, reason } = req.body;
+        if (!Array.isArray(toolIds) || toolIds.length === 0) {
+            return res.status(400).json({ success: false, message: 'Specific tool IDs must be selected to scrap' });
+        }
+        const result = await toolService.bulkScrapTools({
+            toolIds,
+            reason,
+            user: req.user
+        });
+        res.status(200).json({ success: true, message: result.message, count: result.count, data: result });
+    } catch (error) {
+        next(error);
+    }
+};
+
 export const markToolsAsPrinted = async (req, res, next) => {
     try {
         if (req.user && req.user.role === 'Vendor') {
@@ -322,7 +381,10 @@ export const getToolById = async (req, res, next) => {
             return getDeletedTools(req, res, next);
         }
 
-        const result = await toolService.getToolById(toolId);
+        const storeId = req.query.storeId || req.params.storeId;
+        const projectId = req.query.projectId;
+
+        const result = await toolService.getToolById(toolId, storeId, projectId);
         if (!result) {
             return res.status(404).json({ success: false, message: 'Tool not found' });
         }
@@ -417,7 +479,8 @@ export const transferTools = async (req, res, next) => {
         res.status(200).json({
             success: true,
             message: `Successfully transferred ${result.count} tools from ${result.sourceStore.name} to ${result.destinationStore.name}`,
-            data: result
+            data: result,
+            challan: result.challan
         });
     } catch (error) {
         next(error);
