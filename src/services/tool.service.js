@@ -9,14 +9,57 @@ import * as XLSX from 'xlsx';
 const applyAdvancedFilters = (query, params) => {
     if (params.search && String(params.search).trim()) {
         if (!query.$and) query.$and = [];
-        const escapedSearch = String(params.search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        query.$and.push({
-            $or: [
-                { description: { $regex: escapedSearch, $options: 'i' } },
-                { toolId: { $regex: escapedSearch, $options: 'i' } },
-                { toolCode: { $regex: escapedSearch, $options: 'i' } }
-            ]
-        });
+        const rawSearch = String(params.search).trim();
+
+        let tokens = [];
+        if (rawSearch.includes(',') || rawSearch.includes('\n') || rawSearch.includes('|') || rawSearch.includes(';') || rawSearch.includes('\t')) {
+            const rawTokens = rawSearch.split(/[\n,|\t;]+/).map(t => t.trim()).filter(Boolean);
+            for (const rt of rawTokens) {
+                tokens.push(...rt.split(/\s+/).map(s => s.trim()).filter(Boolean));
+            }
+        } else {
+            const spaceTokens = rawSearch.split(/[\s|\t;]+/).map(s => s.trim()).filter(Boolean);
+            const looksLikeMultipleCodes = spaceTokens.length > 1 && spaceTokens.every(t => /^[A-Za-z0-9_-]+$/.test(t) && (/\d/.test(t) || t.length >= 6));
+            if (looksLikeMultipleCodes) {
+                tokens = spaceTokens;
+            } else {
+                tokens = [rawSearch];
+            }
+        }
+
+        const uniqueTokens = [];
+        const seenLower = new Set();
+        for (const tok of tokens) {
+            const lower = tok.toLowerCase();
+            if (!seenLower.has(lower)) {
+                seenLower.add(lower);
+                uniqueTokens.push(tok);
+            }
+        }
+
+        if (uniqueTokens.length === 1) {
+            const escapedSearch = uniqueTokens[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            query.$and.push({
+                $or: [
+                    { description: { $regex: escapedSearch, $options: 'i' } },
+                    { toolId: { $regex: escapedSearch, $options: 'i' } },
+                    { toolCode: { $regex: escapedSearch, $options: 'i' } }
+                ]
+            });
+        } else if (uniqueTokens.length > 1) {
+            const tokenOrConditions = [];
+            for (const tok of uniqueTokens) {
+                const escaped = tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                tokenOrConditions.push(
+                    { toolId: { $regex: `^${escaped}$`, $options: 'i' } },
+                    { toolCode: { $regex: `^${escaped}$`, $options: 'i' } },
+                    { toolId: { $regex: escaped, $options: 'i' } },
+                    { toolCode: { $regex: escaped, $options: 'i' } },
+                    { description: { $regex: escaped, $options: 'i' } }
+                );
+            }
+            query.$and.push({ $or: tokenOrConditions });
+        }
     }
 
     if (params.category && params.category !== 'All' && String(params.category).trim()) {
@@ -410,13 +453,12 @@ export const syncToolIdReferences = async (toolObjectId, oldToolId, newToolId) =
             : toolObjectId;
         const idStr = toolObjectId.toString();
 
-        // 1. Update Challan items
+        // 1. Update Challan items (target strictly by unique tool ObjectId)
         await Challan.updateMany(
             {
                 $or: [
                     { 'items.tool': objId },
-                    { 'items.tool': idStr },
-                    { 'items.toolId': oldToolId }
+                    { 'items.tool': idStr }
                 ]
             },
             {
@@ -427,21 +469,19 @@ export const syncToolIdReferences = async (toolObjectId, oldToolId, newToolId) =
                     {
                         $or: [
                             { 'elem.tool': objId },
-                            { 'elem.tool': idStr },
-                            { 'elem.toolId': oldToolId }
+                            { 'elem.tool': idStr }
                         ]
                     }
                 ]
             }
         );
 
-        // 2. Update ToolMovement records
+        // 2. Update ToolMovement records (target strictly by unique tool ObjectId)
         await ToolMovement.updateMany(
             {
                 $or: [
                     { tool: objId },
-                    { tool: idStr },
-                    { toolIdStr: oldToolId }
+                    { tool: idStr }
                 ]
             },
             {
@@ -449,13 +489,12 @@ export const syncToolIdReferences = async (toolObjectId, oldToolId, newToolId) =
             }
         );
 
-        // 3. Update MissingTool records
+        // 3. Update MissingTool records (target strictly by unique tool ObjectId)
         await MissingTool.updateMany(
             {
                 $or: [
                     { tool: objId },
-                    { tool: idStr },
-                    { toolIdStr: oldToolId }
+                    { tool: idStr }
                 ]
             },
             {
@@ -463,13 +502,12 @@ export const syncToolIdReferences = async (toolObjectId, oldToolId, newToolId) =
             }
         );
 
-        // 4. Update ToolAuditLog snapshots
+        // 4. Update ToolAuditLog snapshots (target strictly by unique tool ObjectId)
         await ToolAuditLog.updateMany(
             {
                 $or: [
                     { 'snapshots._id': objId },
-                    { 'snapshots._id': idStr },
-                    { 'snapshots.toolId': oldToolId }
+                    { 'snapshots._id': idStr }
                 ]
             },
             {
@@ -480,19 +518,11 @@ export const syncToolIdReferences = async (toolObjectId, oldToolId, newToolId) =
                     {
                         $or: [
                             { 'elem._id': objId },
-                            { 'elem._id': idStr },
-                            { 'elem.toolId': oldToolId }
+                            { 'elem._id': idStr }
                         ]
                     }
                 ]
             }
-        );
-
-        // 5. Update ToolAuditLog toolIds array elements
-        await ToolAuditLog.updateMany(
-            { toolIds: oldToolId },
-            { $set: { 'toolIds.$[elem]': newToolId } },
-            { arrayFilters: [{ elem: oldToolId }] }
         );
     } catch (error) {
         console.error(`[syncToolIdReferences] Error syncing toolId references for tool ${toolObjectId}:`, error);
@@ -500,9 +530,14 @@ export const syncToolIdReferences = async (toolObjectId, oldToolId, newToolId) =
 };
 
 const updateToolById = async (id, toolData) => {
-    let query = { toolId: id };
+    let query;
     if (mongoose.Types.ObjectId.isValid(id)) {
-        query = { $or: [{ _id: id }, { toolId: id }] };
+        query = { _id: id };
+    } else {
+        query = { toolId: id };
+        if (toolData && toolData.project && mongoose.Types.ObjectId.isValid(toolData.project)) {
+            query.project = toolData.project;
+        }
     }
     const existingTool = await Tool.findOne(query);
     if (!existingTool) throw new Error('Tool not found');
@@ -743,9 +778,84 @@ const getDeletedTools = async (params = {}) => {
     };
 };
 
+const bulkScrapTools = async ({ toolIds, reason = '', user }) => {
+    if (!Array.isArray(toolIds) || toolIds.length === 0) {
+        throw new Error('Please select at least one tool to scrap');
+    }
+
+    const tools = await Tool.find({ _id: { $in: toolIds } });
+    if (!tools || tools.length === 0) {
+        throw new Error('No tools found for the selected IDs');
+    }
+
+    // Validation 1: All tools must be printed before moving to Scrap
+    const unprinted = tools.filter(t => !t.isPrinted);
+    if (unprinted.length > 0) {
+        const labels = unprinted.map(t => t.toolId || t._id).join(', ');
+        throw new Error(`Tool(s) [${labels}] must be marked as Printed before moving to Scrap`);
+    }
+
+    // Validation 2: Cannot scrap tools that are already scrapped or disposed
+    const alreadyScrapped = tools.filter(t => t.isScrapped || t.isDisposed);
+    if (alreadyScrapped.length > 0) {
+        const labels = alreadyScrapped.map(t => t.toolId || t._id).join(', ');
+        throw new Error(`Tool(s) [${labels}] are already marked as Scrapped or Disposed`);
+    }
+
+    // Validation 3: Cannot scrap tools that are currently Moving
+    const movingTools = tools.filter(t => ['moving', 'in transit', 'transit'].includes((t.status || '').toLowerCase()));
+    if (movingTools.length > 0) {
+        const labels = movingTools.map(t => t.toolId || t._id).join(', ');
+        throw new Error(`Cannot scrap tool(s) [${labels}] because they are currently in transit / moving`);
+    }
+
+    const userInfo = {
+        _id: user?._id || null,
+        name: user?.name || user?.username || 'System User',
+        email: user?.email || 'system@landt.com'
+    };
+
+    const targetToolIds = [];
+    const now = new Date();
+
+    for (const tool of tools) {
+        targetToolIds.push(tool.toolId || tool._id.toString());
+        tool.status = 'Scrapped';
+        tool.isScrapped = true;
+        tool.isDisposed = false;
+        tool.scrappedAt = now;
+        tool.scrappedBy = userInfo;
+        tool.scrapReason = reason || 'Marked as Scrap';
+        // Project and store associations remain untouched
+        await tool.save();
+    }
+
+    const auditLog = new ToolAuditLog({
+        user: userInfo,
+        dateTime: now,
+        action: 'Move Tools to Scrap',
+        store: tools[0]?.currentSite || tools[0]?.store,
+        affectedToolsCount: tools.length,
+        toolIds: targetToolIds,
+        remarks: reason ? `Moved ${tools.length} tool(s) to Scrap: ${reason}` : `Moved ${tools.length} tool(s) to Scrap`
+    });
+    await auditLog.save();
+
+    return {
+        count: tools.length,
+        message: `${tools.length} tool(s) moved to Scrap successfully`
+    };
+};
+
 const getScrappedTools = async (params = {}) => {
-    const { page = 1, limit = 10, search = '', storeId, projectId, sortBy = 'scrappedAt', sortOrder = 'desc' } = params;
+    const { page = 1, limit = 10, search = '', storeId, projectId, disposalStatus = 'pending', sortBy = 'scrappedAt', sortOrder = 'desc' } = params;
     const query = { isScrapped: true };
+
+    if (disposalStatus === 'pending') {
+        query.isDisposed = { $ne: true };
+    } else if (disposalStatus === 'disposed') {
+        query.isDisposed = true;
+    } // if 'all', match both pending and disposed
 
     if (storeId && storeId !== 'All') {
         query.$or = [
@@ -774,6 +884,8 @@ const getScrappedTools = async (params = {}) => {
         Tool.find(query)
             .populate('project', 'name projectCode')
             .populate('currentSite', 'name location')
+            .populate('scrapDealer', 'name code vendorCode contactPerson')
+            .populate('disposalChallanId', 'challanNumber challanDate')
             .sort(sort)
             .skip(skip)
             .limit(parseInt(limit)),
@@ -863,13 +975,30 @@ const restoreToolById = async (id, user = {}) => {
     const tool = await Tool.findById(id);
     if (!tool) throw new Error('Tool not found');
 
+    if (tool.isDisposed) {
+        throw new Error('Cannot restore tool that has already been disposed via a Delivery Challan');
+    }
+
     if (!tool.isDeleted && !tool.isScrapped) {
         return tool; // Already active
     }
 
     const wasUnprinted = !tool.isPrinted;
+
+    // Use temporary toolId to guarantee no E11000 index collision during un-deletion
+    if (wasUnprinted && tool.toolId && !tool.toolId.startsWith('__RESTORE_TEMP_')) {
+        tool.toolId = `__RESTORE_TEMP_${tool._id}_${Date.now()}`;
+    } else if (tool.toolId && tool.toolId.startsWith('__TRASHED_')) {
+        tool.toolId = tool.toolId.replace(/^__TRASHED_[^_]+_/, '');
+    }
+
     tool.isDeleted = false;
     tool.isScrapped = false;
+    tool.isDisposed = false;
+    tool.disposedAt = null;
+    tool.disposalChallanId = null;
+    tool.disposalChallanNumber = '';
+    tool.scrapDealer = null;
     tool.status = 'Available';
     tool.deletedAt = null;
     tool.deletedBy = null;
@@ -877,9 +1006,12 @@ const restoreToolById = async (id, user = {}) => {
     tool.scrappedBy = null;
     await tool.save();
 
-    if (wasUnprinted && (tool.project || tool.currentSite)) {
-        await resequenceProjectToolSerials(tool.project || tool.currentSite);
+    const projId = tool.project || tool.currentSite;
+    if (projId) {
+        await resequenceProjectToolSerials(projId);
     }
+
+    const updatedTool = await Tool.findById(tool._id).populate('project').populate('currentSite').lean();
 
     const auditLog = new ToolAuditLog({
         user: {
@@ -889,19 +1021,24 @@ const restoreToolById = async (id, user = {}) => {
         },
         dateTime: new Date(),
         action: 'Restore Tool',
-        store: tool.currentSite || tool.store,
+        store: updatedTool.currentSite || updatedTool.store,
         affectedToolsCount: 1,
-        toolIds: [tool.toolId],
-        remarks: `Restored tool ${tool.toolId}`
+        toolIds: [updatedTool.toolId],
+        remarks: `Restored tool ${updatedTool.toolId}`
     });
     await auditLog.save();
 
-    return tool;
+    return updatedTool;
 };
 
 const bulkRestoreTools = async ({ toolIds, user }) => {
     if (!Array.isArray(toolIds) || toolIds.length === 0) {
         throw new Error('Specific tool IDs must be selected for bulk restore');
+    }
+
+    const hasDisposed = await Tool.countDocuments({ _id: { $in: toolIds }, isDisposed: true });
+    if (hasDisposed > 0) {
+        throw new Error('One or more selected tools have already been disposed via a Delivery Challan and cannot be restored');
     }
 
     const toolsToRestore = await Tool.find({
@@ -914,11 +1051,17 @@ const bulkRestoreTools = async ({ toolIds, user }) => {
     }
 
     const affectedProjectIds = new Set();
-    const targetToolIds = [];
 
     for (const tool of toolsToRestore) {
-        targetToolIds.push(tool.toolId || tool._id.toString());
         const wasUnprinted = !tool.isPrinted;
+
+        // Use temporary toolId to guarantee no E11000 index collision during un-deletion
+        if (wasUnprinted && tool.toolId && !tool.toolId.startsWith('__RESTORE_TEMP_')) {
+            tool.toolId = `__RESTORE_TEMP_${tool._id}_${Date.now()}`;
+        } else if (tool.toolId && tool.toolId.startsWith('__TRASHED_')) {
+            tool.toolId = tool.toolId.replace(/^__TRASHED_[^_]+_/, '');
+        }
+
         tool.isDeleted = false;
         tool.isScrapped = false;
         tool.status = 'Available';
@@ -928,15 +1071,16 @@ const bulkRestoreTools = async ({ toolIds, user }) => {
         tool.scrappedBy = null;
         await tool.save();
 
-        if (wasUnprinted) {
-            if (tool.project) affectedProjectIds.add(tool.project.toString());
-            else if (tool.currentSite) affectedProjectIds.add(tool.currentSite.toString());
-        }
+        if (tool.project) affectedProjectIds.add(tool.project.toString());
+        else if (tool.currentSite) affectedProjectIds.add(tool.currentSite.toString());
     }
 
     for (const projId of affectedProjectIds) {
         await resequenceProjectToolSerials(projId);
     }
+
+    const restoredTools = await Tool.find({ _id: { $in: toolIds } }).select('toolId').lean();
+    const targetToolIds = restoredTools.map(t => t.toolId || t._id.toString());
 
     const auditLog = new ToolAuditLog({
         user: {
@@ -1092,17 +1236,88 @@ const exportToolsByStoreId = async (storeId, params = {}) => {
     return buffer;
 };
 
-const getToolById = async (id) => {
+const getToolById = async (id, storeId = null, projectId = null) => {
     if (!id) return null;
-    const escaped = String(id).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const rawStr = String(id).trim();
+    if (!rawStr) return null;
+
+    const escaped = rawStr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    // 1. If valid Mongo ObjectId, try direct lookup by _id first
+    if (mongoose.Types.ObjectId.isValid(rawStr) && String(new mongoose.Types.ObjectId(rawStr)) === rawStr) {
+        const query = { _id: rawStr, isDeleted: { $ne: true } };
+        if (storeId && mongoose.Types.ObjectId.isValid(storeId)) {
+            query.$or = [{ currentSite: storeId }, { store: storeId }];
+        }
+        if (projectId && mongoose.Types.ObjectId.isValid(projectId)) {
+            query.project = projectId;
+        }
+        const toolById = await Tool.findOne(query).populate('project').populate('currentSite').lean();
+        if (toolById) return toolById;
+    }
+
+    // 2. Build search conditions (exact, suffix/serial, numeric serial)
     const searchConditions = [
         { toolId: { $regex: `^${escaped}$`, $options: 'i' } },
-        { toolCode: { $regex: `^${escaped}$`, $options: 'i' } }
+        { toolCode: { $regex: `^${escaped}$`, $options: 'i' } },
+        { toolId: { $regex: `${escaped}$`, $options: 'i' } },
+        { toolCode: { $regex: `${escaped}$`, $options: 'i' } }
     ];
-    if (mongoose.Types.ObjectId.isValid(id)) {
-        searchConditions.push({ _id: id });
+
+    if (rawStr.length >= 3) {
+        searchConditions.push({ toolId: { $regex: escaped, $options: 'i' } });
     }
-    return await Tool.findOne({ $or: searchConditions, isDeleted: { $ne: true } }).populate('project').populate('currentSite').lean();
+
+    const numVal = parseInt(rawStr, 10);
+    if (!isNaN(numVal) && numVal > 0 && /^\d+$/.test(rawStr)) {
+        searchConditions.push({ serialNumber: numVal });
+        searchConditions.push({ originalSerialNumber: numVal });
+    }
+
+    const andConditions = [
+        { $or: searchConditions },
+        { isDeleted: { $ne: true } }
+    ];
+
+    if (storeId && mongoose.Types.ObjectId.isValid(storeId)) {
+        andConditions.push({
+            $or: [
+                { currentSite: storeId },
+                { store: storeId }
+            ]
+        });
+    }
+
+    if (projectId && mongoose.Types.ObjectId.isValid(projectId)) {
+        andConditions.push({ project: projectId });
+    }
+
+    const candidates = await Tool.find({ $and: andConditions }).populate('project').populate('currentSite').lean();
+    if (!candidates || candidates.length === 0) return null;
+
+    const lowerRaw = rawStr.toLowerCase();
+
+    // Prioritize exact match
+    const exactMatch = candidates.find(t => 
+        (t.toolId && t.toolId.toLowerCase() === lowerRaw) || 
+        (t.toolCode && t.toolCode.toLowerCase() === lowerRaw)
+    );
+    if (exactMatch) return exactMatch;
+
+    // Prioritize suffix match (e.g., '0001' matches 'SSSSOP0050825UE0001')
+    const suffixMatch = candidates.find(t => 
+        (t.toolId && t.toolId.toLowerCase().endsWith(lowerRaw)) || 
+        (t.toolCode && t.toolCode.toLowerCase().endsWith(lowerRaw))
+    );
+    if (suffixMatch) return suffixMatch;
+
+    // Prioritize serial number match
+    if (!isNaN(numVal)) {
+        const serialMatch = candidates.find(t => t.serialNumber === numVal || t.originalSerialNumber === numVal);
+        if (serialMatch) return serialMatch;
+    }
+
+    return candidates[0];
 };
 
 const getToolFilterOptions = async (storeId) => {
@@ -1304,7 +1519,41 @@ const transferTools = async ({ sourceStoreId, destinationStoreId, toolIds, remar
         throw new Error(`Cannot transfer tools: Tool(s) [${unprintedLabels}] are not marked as Printed. All selected tools must be printed before performing an inter-store Transfer.`);
     }
 
-    const transferRef = `TRF-${Date.now()}`;
+    const { createStoreTransferChallan } = await import('./challan.service.js');
+    const transferChallan = await createStoreTransferChallan({
+        sourceStore: {
+            _id: sourceStore._id,
+            name: sourceStore.name,
+            storeCode: sourceStore.storeCode || '',
+            location: sourceStore.location || ''
+        },
+        destinationStore: {
+            _id: destinationStore._id,
+            name: destinationStore.name,
+            storeCode: destinationStore.storeCode || '',
+            location: destinationStore.location || ''
+        },
+        project: {
+            _id: sourceStore.project?._id || sourceStore.project,
+            name: sourceStore.project?.name || '',
+            projectCode: sourceStore.project?.projectCode || ''
+        },
+        items: toolsToTransfer.map(t => ({
+            _id: t._id,
+            toolId: t.toolId || t._id.toString(),
+            description: t.description || '',
+            toolCode: t.toolCode || '',
+            category: t.toolType || t.category || '',
+            capacity: t.capacity || '',
+            safeWorkingLoad: t.safeWorkingLoad || '',
+            serialNumber: t.serialNumber || '',
+            makeYear: t.makeYear || '',
+            remarks: t.remarks || ''
+        })),
+        remarks
+    }, user);
+
+    const transferRef = transferChallan.challanNumber;
     const snapshots = [];
     const movementDocs = [];
     const targetToolIdStrings = [];
@@ -1373,6 +1622,7 @@ const transferTools = async ({ sourceStoreId, destinationStoreId, toolIds, remar
     return {
         count: toolsToTransfer.length,
         transferRef,
+        challan: transferChallan,
         sourceStore: { _id: sourceStore._id, name: sourceStore.name },
         destinationStore: { _id: destinationStore._id, name: destinationStore.name },
         auditLogId: auditLog._id
@@ -1398,7 +1648,8 @@ export const toolService = {
     getToolFilterOptions,
     bulkEditTools,
     transferTools,
-    syncToolIdReferences
+    syncToolIdReferences,
+    bulkScrapTools
 };
 
 

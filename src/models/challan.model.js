@@ -5,22 +5,48 @@ const challanItemSchema = new mongoose.Schema({
     toolId: { type: String, required: true },
     description: { type: String, default: '' },
     toolCode: { type: String, default: '' },
+    category: { type: String, default: '' },
+    capacity: { type: String, default: '' },
+    safeWorkingLoad: { type: String, default: '' },
+    serialNumber: { type: String, default: '' },
+    makeYear: { type: String, default: '' },
     quantity: { type: Number, default: 1 },
     unit: { type: String, default: 'NOS' },
     rate: { type: Number, default: 0 },
     remarks: { type: String, default: '' },
     returnStatus: { 
         type: String, 
-        enum: ['Sent', 'Returned', 'Missing'], 
+        enum: ['Sent', 'Returned', 'Missing', 'Pending'], 
         default: 'Sent' 
-    }
+    },
+    returnedAt: { type: Date, default: null },
+    returnChallanNumber: { type: String, default: '' },
+    returnChallanId: { type: mongoose.Schema.Types.ObjectId, ref: 'Challan', default: null }
 }, { _id: false });
 
 const challanSchema = new mongoose.Schema({
     challanNumber: { type: String, unique: true, required: true, index: true },
-    challanType: { type: String, enum: ['Delivery', 'Return'], required: true },
-    status: { type: String, enum: ['Active', 'Completed', 'Cancelled', 'Transfer', 'Returned'], default: 'Active', index: true },
+    challanType: { type: String, enum: ['Delivery', 'Return', 'Transfer', 'Scrap'], required: true },
+    status: { type: String, enum: ['Active', 'Completed', 'Cancelled', 'Transfer', 'Returned', 'Pending'], default: 'Active', index: true },
     isScrapDC: { type: Boolean, default: false },
+    isStoreTransfer: { type: Boolean, default: false },
+    project: {
+        _id: { type: mongoose.Schema.Types.ObjectId, ref: 'Project' },
+        name: { type: String, default: '' },
+        projectCode: { type: String, default: '' }
+    },
+    sourceStore: {
+        _id: { type: mongoose.Schema.Types.ObjectId, ref: 'Store' },
+        name: { type: String, default: '' },
+        storeCode: { type: String, default: '' },
+        location: { type: String, default: '' }
+    },
+    destinationStore: {
+        _id: { type: mongoose.Schema.Types.ObjectId, ref: 'Store' },
+        name: { type: String, default: '' },
+        storeCode: { type: String, default: '' },
+        location: { type: String, default: '' }
+    },
     siteCode: { type: String, default: '' },
     vendorCode: { type: String, default: '' },
     subcontractorName: { type: String, default: '' },
@@ -44,7 +70,7 @@ const challanSchema = new mongoose.Schema({
     receiptDate: { type: String, default: '' },
     vendor: {
         _id: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor' },
-        name: { type: String, required: true },
+        name: { type: String, required: false, default: '' },
         vendorCode: { type: String, default: '' },
         address: { type: String, default: '' },
         gstNumber: { type: String, default: '' },

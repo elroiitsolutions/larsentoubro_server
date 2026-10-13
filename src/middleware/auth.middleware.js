@@ -16,6 +16,10 @@ const getGuestUser = (decoded = {}) => ({
 
 export const attachUser = async (req, res, next) => {
     try {
+        if (mongoose.connection.readyState !== 1) {
+            return next();
+        }
+
         let token;
         const authHeader = req.headers.authorization;
         if (authHeader && authHeader.startsWith('Bearer ')) {
@@ -100,6 +104,13 @@ export const authenticate = async (req, res, next) => {
             return res.status(401).json({
                 success: false,
                 message: 'Authentication required. Please log in.'
+            });
+        }
+
+        if (mongoose.connection.readyState !== 1) {
+            return res.status(503).json({
+                success: false,
+                message: 'Database connection initializing. Please try again in a moment.'
             });
         }
 

@@ -5,8 +5,12 @@ import { Store } from '../models/store.model.js';
 import { ToolMovement } from '../models/toolMovement.model.js';
 import ToolAuditLog from '../models/toolAuditLog.model.js';
 import { getVendorAssignedScope } from '../utils/vendorScope.js';
+import { reconcileMissingToolStatuses } from './challan.service.js';
 
 export const getDashboardStats = async (filters = {}, user = null) => {
+    // Self-healing: Reconcile missing tool statuses across projects to eliminate cross-project pollution
+    await reconcileMissingToolStatuses();
+
     const {
         division,
         project: projectId,
@@ -140,14 +144,23 @@ export const getDashboardStats = async (filters = {}, user = null) => {
         }
     }
 
-    // 2. Fetch tools and projects concurrently
-    const [tools, allProjects] = await Promise.all([
+    // Build scrap query matching filters
+    const scrapQuery = { isDeleted: { $ne: true }, isScrapped: true };
+    if (query._id) scrapQuery._id = query._id;
+    if (query.project) scrapQuery.project = query.project;
+    if (query.currentSite) scrapQuery.currentSite = query.currentSite;
+    if (query.division) scrapQuery.division = query.division;
+    if (query.hub) scrapQuery.hub = query.hub;
+
+    // 2. Fetch tools, projects, and scrap tools concurrently
+    const [tools, allProjects, scrapCount] = await Promise.all([
         Tool.find(query)
             .populate('project', 'name projectCode division')
             .populate('currentSite', 'name location type division')
             .populate('hub', 'name location')
             .lean(),
-        Project.find(projectsFilter).lean()
+        Project.find(projectsFilter).lean(),
+        Tool.countDocuments(scrapQuery)
     ]);
 
     const toolIds = tools.map(t => t._id);
@@ -169,7 +182,7 @@ export const getDashboardStats = async (filters = {}, user = null) => {
     let inspectionDue = 0;
     let expired = 0;
     let damagedRepair = 0;
-    let scrap = 0;
+    let scrap = scrapCount;
     let missing = 0;
     let inTransit = 0;
     let usable = 0;
@@ -264,14 +277,19 @@ export const getDashboardStats = async (filters = {}, user = null) => {
             });
         }
         if (st === 'missing') {
+            const projName = tool.project?.name || tool.project?.projectCode || '';
+            const storeName = tool.currentSite?.name || '';
+            const contextStr = [projName, storeName].filter(Boolean).join(' - ');
             alerts.push({
                 id: `alert-miss-${tool._id}`,
                 type: 'Missing Tool',
                 severity: 'danger',
                 title: `Tool Reported Missing`,
-                message: `Tool ${tool.toolId || tool.description} is flagged as missing.`,
+                message: `Tool ${tool.toolId || tool.description} is flagged as missing${contextStr ? ` (${contextStr})` : ''}.`,
                 toolId: tool.toolId,
                 toolDbId: tool._id,
+                project: tool.project,
+                store: tool.currentSite,
                 date: new Date()
             });
         }
@@ -522,7 +540,11 @@ export const extendToolLife = async (toolId, payload = {}) => {
         tool = await Tool.findById(toolId);
     }
     if (!tool) {
-        tool = await Tool.findOne({ toolId: toolId });
+        const query = { toolId: toolId };
+        if (payload.projectId && mongoose.Types.ObjectId.isValid(payload.projectId)) {
+            query.project = payload.projectId;
+        }
+        tool = await Tool.findOne(query);
     }
     if (!tool) {
         throw new Error('Tool not found');

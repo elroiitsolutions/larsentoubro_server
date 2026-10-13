@@ -7,6 +7,7 @@ import {
     bulkDeleteTools,
     getDeletedTools,
     getScrappedTools,
+    bulkScrapTools,
     markToolsAsPrinted,
     unmarkToolsAsPrinted,
     restoreToolById,
@@ -28,6 +29,8 @@ router.get('/lookup-validity', lookupToolValidity);
 // Static Trash, Scrap, Print & Bulk Endpoints
 router.get('/trash', requireAdmin, getDeletedTools);
 router.get('/scrap', getScrappedTools);
+router.post('/bulk-scrap', bulkScrapTools);
+router.post('/scrap', bulkScrapTools);
 router.post('/mark-printed', markToolsAsPrinted);
 router.post('/unmark-printed', unmarkToolsAsPrinted);
 router.post('/bulk-delete', requireAdmin, bulkDeleteTools);

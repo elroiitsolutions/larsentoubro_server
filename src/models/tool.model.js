@@ -60,7 +60,12 @@ const toolSchema = new mongoose.Schema({
         name: { type: String },
         email: { type: String }
     },
-    scrapReason: { type: String, default: '' }
+    scrapReason: { type: String, default: '' },
+    isDisposed: { type: Boolean, default: false, index: true },
+    disposedAt: { type: Date, default: null },
+    disposalChallanId: { type: mongoose.Schema.Types.ObjectId, ref: 'Challan', default: null },
+    disposalChallanNumber: { type: String, default: '' },
+    scrapDealer: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor', default: null }
 }, {
     timestamps: true
 });
