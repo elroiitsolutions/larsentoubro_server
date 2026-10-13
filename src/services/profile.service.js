@@ -14,38 +14,7 @@ export const getProfiles = async (params = {}, user = null) => {
         query.status = status;
     }
 
-    // Role-based visibility isolation:
-    // If not Admin, user can only see:
-    // 1. Profiles created by an Admin (or legacy profiles without createdBy / createdBy.role == 'Admin')
-    // 2. Profiles created by themselves (matched by _id, name, username, or email)
-    // Profiles created by OTHER users are NOT visible to them.
-    if (user && user.role !== 'Admin') {
-        const userScopeConditions = [
-            { 'createdBy.role': 'Admin' },
-            { 'createdBy': { $exists: false } },
-            { 'createdBy': null },
-            { 'createdBy.role': { $exists: false } }
-        ];
-
-        if (user._id) {
-            userScopeConditions.push({ 'createdBy._id': user._id });
-            if (mongoose.Types.ObjectId.isValid(user._id)) {
-                userScopeConditions.push({ 'createdBy._id': new mongoose.Types.ObjectId(user._id) });
-            }
-        }
-        if (user.name) {
-            userScopeConditions.push({ 'createdBy.name': user.name });
-        }
-        if (user.username) {
-            userScopeConditions.push({ 'createdBy.name': user.username });
-        }
-        if (user.email) {
-            userScopeConditions.push({ 'createdBy.email': user.email });
-        }
-
-        query.$and = [{ $or: userScopeConditions }];
-    }
-
+    // Profiles are central enterprise records accessible across all users.
     if (search) {
         const searchConditions = [
             { name: { $regex: search, $options: 'i' } },
@@ -97,20 +66,6 @@ export const getProfileById = async (id, user = null) => {
         .lean();
     if (!profile) {
         throw new Error('Profile not found');
-    }
-
-    if (user && user.role !== 'Admin') {
-        const isAdminCreated = !profile.createdBy || profile.createdBy.role === 'Admin' || !profile.createdBy.role;
-        const isSelfCreated = profile.createdBy && (
-            (profile.createdBy._id && profile.createdBy._id.toString() === user._id?.toString()) ||
-            (profile.createdBy.email && user.email && profile.createdBy.email.toLowerCase() === user.email.toLowerCase()) ||
-            (profile.createdBy.name && user.name && profile.createdBy.name.toLowerCase() === user.name.toLowerCase()) ||
-            (profile.createdBy.name && user.username && profile.createdBy.name.toLowerCase() === user.username.toLowerCase())
-        );
-
-        if (!isAdminCreated && !isSelfCreated) {
-            throw new Error('Unauthorized to view this profile');
-        }
     }
 
     return profile;

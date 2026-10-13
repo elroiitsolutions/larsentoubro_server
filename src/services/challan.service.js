@@ -6,6 +6,8 @@ import { ToolMovement } from '../models/toolMovement.model.js';
 import { MissingTool } from '../models/missingTool.model.js';
 import { ChallanAuditLog } from '../models/challanAuditLog.model.js';
 import { Vendor } from '../models/vendor.model.js';
+import { Project } from '../models/project.model.js';
+import { Store } from '../models/store.model.js';
 import * as vendorService from './vendor.service.js';
 import * as profileService from './profile.service.js';
 
@@ -19,14 +21,26 @@ import * as profileService from './profile.service.js';
 export const generateChallanNumber = async (type, session = null) => {
     const fullYear = new Date().getFullYear();
     const shortYear = String(fullYear).slice(-2);
-    const counterId = `challan_${type.toLowerCase()}_${fullYear}`;
-    const prefix = type === 'Delivery' ? 'DC' : 'RC';
+    const isScrapType = ['scrap', 'scrapdc', 'sdc'].includes(String(type).toLowerCase());
+    const counterId = isScrapType ? `challan_scrap_${fullYear}` : `challan_${type.toLowerCase()}_${fullYear}`;
+    const prefix = type === 'Delivery' ? 'DC' : type === 'Return' ? 'RC' : isScrapType ? 'SDC' : 'STC';
 
     // Self-healing: Find maximum existing serial number for this type and year in database
     const regex = new RegExp(`^${prefix}-${shortYear}-(\\d+)$`, 'i');
     const queryOptions = session ? { session } : {};
+    let queryFilter = { challanType: type, challanNumber: { $regex: regex } };
+    if (isScrapType) {
+        queryFilter = {
+            $or: [
+                { isScrapDC: true },
+                { challanType: 'Scrap' }
+            ],
+            challanNumber: { $regex: regex }
+        };
+    }
+
     const existingChallans = await Challan.find(
-        { challanType: type, challanNumber: { $regex: regex } },
+        queryFilter,
         { challanNumber: 1 },
         queryOptions
     ).lean();
@@ -47,9 +61,9 @@ export const generateChallanNumber = async (type, session = null) => {
     const options = { new: true, upsert: true };
     if (session) options.session = session;
 
-    // If counter is missing or out of sync (higher than actual maxSeq in DB), reset counter to maxSeq
+    // If counter is missing or out of sync (lower than actual maxSeq in DB), set counter to maxSeq
     const currentCounter = await Counter.findById(counterId, null, queryOptions);
-    if (!currentCounter || currentCounter.seq > maxSeq) {
+    if (!currentCounter || currentCounter.seq < maxSeq) {
         await Counter.findByIdAndUpdate(
             counterId,
             { seq: maxSeq },
@@ -65,6 +79,230 @@ export const generateChallanNumber = async (type, session = null) => {
 
     const serialNum = String(counter.seq).padStart(3, '0');
     return `${prefix}-${shortYear}-${serialNum}`;
+};
+
+/**
+ * Create Store-to-Store Transfer Challan (STC)
+ */
+export const createStoreTransferChallan = async (data, user = {}, session = null) => {
+    const {
+        sourceStore,
+        destinationStore,
+        project,
+        items = [],
+        remarks = ''
+    } = data;
+
+    const challanNumber = await generateChallanNumber('Transfer', session);
+
+    const createdBy = {
+        _id: user._id || null,
+        name: user.name || user.username || 'System User',
+        email: user.email || 'system@landt.com'
+    };
+
+    const projId = (project?._id || project?.id || project);
+    const validProjId = (projId && mongoose.Types.ObjectId.isValid(String(projId))) ? new mongoose.Types.ObjectId(String(projId)) : null;
+
+    const srcStoreId = (sourceStore?._id || sourceStore?.id || sourceStore);
+    const validSrcStoreId = (srcStoreId && mongoose.Types.ObjectId.isValid(String(srcStoreId))) ? new mongoose.Types.ObjectId(String(srcStoreId)) : null;
+
+    const destStoreId = (destinationStore?._id || destinationStore?.id || destinationStore);
+    const validDestStoreId = (destStoreId && mongoose.Types.ObjectId.isValid(String(destStoreId))) ? new mongoose.Types.ObjectId(String(destStoreId)) : null;
+
+    const sourceStoreName = sourceStore?.name || 'Source Store';
+    const destinationStoreName = destinationStore?.name || 'Destination Store';
+
+    const challan = new Challan({
+        challanNumber,
+        challanType: 'Transfer',
+        status: 'Completed',
+        isStoreTransfer: true,
+        project: {
+            _id: validProjId,
+            name: project?.name || '',
+            projectCode: project?.projectCode || ''
+        },
+        sourceStore: {
+            _id: validSrcStoreId,
+            name: sourceStoreName,
+            storeCode: sourceStore?.storeCode || '',
+            location: sourceStore?.location || ''
+        },
+        destinationStore: {
+            _id: validDestStoreId,
+            name: destinationStoreName,
+            storeCode: destinationStore?.storeCode || '',
+            location: destinationStore?.location || ''
+        },
+        vendor: {
+            name: `${sourceStoreName} -> ${destinationStoreName}`,
+            vendorCode: 'STORE-TRANSFER',
+            address: destinationStore?.location || ''
+        },
+        store: validDestStoreId,
+        challanDate: new Date(),
+        deliveryDate: new Date(),
+        remarks: remarks || `Store-to-Store Transfer from ${sourceStoreName} to ${destinationStoreName}`,
+        items: items.map(it => ({
+            tool: it._id || it.tool,
+            toolId: it.toolId || String(it._id || it.tool),
+            description: it.description || '',
+            toolCode: it.toolCode || '',
+            category: it.category || it.toolType || '',
+            capacity: it.capacity || '',
+            safeWorkingLoad: it.safeWorkingLoad || '',
+            serialNumber: it.serialNumber || '',
+            makeYear: it.makeYear || '',
+            quantity: 1,
+            unit: 'NOS',
+            returnStatus: 'Sent',
+            remarks: it.remarks || ''
+        })),
+        toolCount: items.length,
+        createdBy
+    });
+
+    const saveOptions = session ? { session } : {};
+    await challan.save(saveOptions);
+
+    const auditLog = new ChallanAuditLog({
+        user: createdBy,
+        action: 'Store Transfer Challan',
+        referenceNumber: challanNumber,
+        details: `Created Store-to-Store Transfer Challan ${challanNumber} for ${items.length} tools from ${sourceStoreName} to ${destinationStoreName}`,
+        metadata: {
+            toolCount: items.length,
+            sourceStore: sourceStoreName,
+            destinationStore: destinationStoreName,
+            project: project?.name
+        }
+    });
+    await auditLog.save(saveOptions);
+
+    return challan;
+};
+
+/**
+ * Self-healing: Backfill missing Store Transfer Challans for past TRF- transfers
+ */
+export const syncMissingStoreTransferChallans = async () => {
+    try {
+        const legacyMovements = await ToolMovement.find({
+            movementType: 'Transfer',
+            referenceNumber: { $regex: '^TRF-', $options: 'i' }
+        }).lean();
+
+        if (!legacyMovements || legacyMovements.length === 0) return 0;
+
+        // Group by legacy referenceNumber
+        const groupsMap = new Map();
+        for (const mov of legacyMovements) {
+            const ref = mov.referenceNumber;
+            if (!groupsMap.has(ref)) {
+                groupsMap.set(ref, []);
+            }
+            groupsMap.get(ref).push(mov);
+        }
+
+        let createdCount = 0;
+
+        for (const [trfRef, movements] of groupsMap.entries()) {
+            const existing = await Challan.findOne({
+                $or: [
+                    { challanNumber: trfRef },
+                    { remarks: { $regex: trfRef, $options: 'i' } },
+                    { notes: { $regex: trfRef, $options: 'i' } }
+                ]
+            });
+            if (existing) continue;
+
+            const toolIds = movements.map(m => m.tool).filter(Boolean);
+            const tools = await Tool.find({ _id: { $in: toolIds } }).populate('store').populate('currentSite').populate('project').lean();
+            const toolMap = new Map(tools.map(t => [t._id.toString(), t]));
+
+            const firstMov = movements[0];
+            const firstTool = tools[0];
+
+            let sourceStoreName = firstMov.from ? firstMov.from.replace(/\s*\([^)]*\)/g, '').trim() : 'Source Store';
+            let destStoreName = firstMov.to ? firstMov.to.replace(/\s*\([^)]*\)/g, '').trim() : 'Destination Store';
+
+            const challanNumber = await generateChallanNumber('Transfer');
+
+            const challanItems = movements.map(m => {
+                const t = toolMap.get(m.tool?.toString()) || {};
+                return {
+                    tool: m.tool,
+                    toolId: m.toolIdStr || t.toolId || String(m.tool),
+                    description: m.description || t.description || 'Transferred Tool',
+                    toolCode: t.toolCode || '',
+                    category: t.toolType || t.category || '',
+                    capacity: t.capacity || '',
+                    safeWorkingLoad: t.safeWorkingLoad || '',
+                    serialNumber: t.serialNumber || '',
+                    makeYear: t.makeYear || '',
+                    quantity: 1,
+                    unit: 'NOS',
+                    returnStatus: 'Sent',
+                    remarks: m.remarks || ''
+                };
+            });
+
+            const projObj = firstTool?.project ? {
+                _id: firstTool.project._id,
+                name: firstTool.project.name || '',
+                projectCode: firstTool.project.projectCode || firstTool.project.code || ''
+            } : {};
+
+            const destStoreObj = firstTool?.currentSite || firstTool?.store;
+
+            const challan = new Challan({
+                challanNumber,
+                challanType: 'Transfer',
+                status: 'Completed',
+                isStoreTransfer: true,
+                project: projObj,
+                sourceStore: {
+                    name: sourceStoreName
+                },
+                destinationStore: {
+                    _id: destStoreObj?._id,
+                    name: destStoreName,
+                    storeCode: destStoreObj?.storeCode || '',
+                    location: destStoreObj?.location || ''
+                },
+                vendor: {
+                    name: `${sourceStoreName} -> ${destStoreName}`,
+                    vendorCode: 'STORE-TRANSFER'
+                },
+                store: destStoreObj?._id || null,
+                challanDate: firstMov.date || firstMov.createdAt || new Date(),
+                deliveryDate: firstMov.date || firstMov.createdAt || new Date(),
+                remarks: firstMov.remarks || `Store Transfer from ${sourceStoreName} to ${destStoreName} (Ref: ${trfRef})`,
+                notes: `Retroactively generated Transfer Challan for legacy movement ${trfRef}`,
+                items: challanItems,
+                toolCount: challanItems.length,
+                createdBy: {
+                    name: firstMov.user || 'System User',
+                    email: 'system@landt.com'
+                }
+            });
+
+            await challan.save();
+
+            await ToolMovement.updateMany(
+                { referenceNumber: trfRef },
+                { $set: { referenceNumber: challanNumber } }
+            );
+
+            createdCount++;
+        }
+
+        return createdCount;
+    } catch (err) {
+        console.error('[syncMissingStoreTransferChallans] Error:', err.message);
+        return 0;
+    }
 };
 
 /**
@@ -141,8 +379,8 @@ export const createDeliveryChallan = async (data, user = {}) => {
         if (!sourceDc) {
             throw new Error('Source Delivery Challan for transfer not found');
         }
-        if (sourceDc.status !== 'Active') {
-            throw new Error(`Cannot transfer from Challan ${sourceDc.challanNumber}: status is '${sourceDc.status}' (Must be Active)`);
+        if (sourceDc.status !== 'Active' && sourceDc.status !== 'Pending') {
+            throw new Error(`Cannot transfer from Challan ${sourceDc.challanNumber}: status is '${sourceDc.status}' (Must be Active or Pending)`);
         }
     }
 
@@ -201,11 +439,26 @@ export const createDeliveryChallan = async (data, user = {}) => {
             email: user.email || 'system@landt.com'
         };
 
+        let projectSnapshot = null;
+        if (sourceDc && sourceDc.project) {
+            projectSnapshot = sourceDc.project;
+        } else if (toolsToCheck.length > 0 && toolsToCheck[0].project) {
+            const projDoc = await Project.findById(toolsToCheck[0].project).lean();
+            if (projDoc) {
+                projectSnapshot = {
+                    _id: projDoc._id,
+                    name: projDoc.name || '',
+                    projectCode: projDoc.projectCode || ''
+                };
+            }
+        }
+
         const challan = new Challan({
             challanNumber,
             challanType: 'Delivery',
             status: 'Active',
             indentNo: typeof indentNo === 'string' ? indentNo.trim() : (indentNo || ''),
+            project: projectSnapshot,
             siteCode: cleanSiteCode,
             vendorCode: vendorCode || vendorDoc.vendorCode,
             subcontractorName: subcontractorName || vendorDoc.name,
@@ -381,8 +634,14 @@ export const createScrapDeliveryChallan = async (data, user = {}) => {
         throw new Error(`Cannot create Scrap Delivery Challan: Tool(s) [${unprintedLabels}] are not marked as Printed. All selected tools must be printed before moving tools to Scrap.`);
     }
 
+    const alreadyDisposed = toolsToCheck.filter(t => t.isDisposed);
+    if (alreadyDisposed.length > 0) {
+        const disposedLabels = alreadyDisposed.map(t => t.toolId || t.toolCode || t._id.toString()).join(', ');
+        throw new Error(`Cannot create Scrap Delivery Challan: Tool(s) [${disposedLabels}] have already been disposed via a Delivery Challan.`);
+    }
+
     return await runInTransaction(async (session) => {
-        const challanNumber = await generateChallanNumber('Delivery', session);
+        const challanNumber = await generateChallanNumber('Scrap', session);
 
         const scrapDealerSnapshot = {
             _id: scrapDealer._id,
@@ -401,12 +660,40 @@ export const createScrapDeliveryChallan = async (data, user = {}) => {
             email: user.email || 'system@landt.com'
         };
 
+        let projectSnapshot = null;
+        if (toolsToCheck.length > 0 && toolsToCheck[0].project) {
+            const projDoc = await Project.findById(toolsToCheck[0].project).lean();
+            if (projDoc) {
+                projectSnapshot = {
+                    _id: projDoc._id,
+                    name: projDoc.name || '',
+                    projectCode: projDoc.projectCode || ''
+                };
+            }
+        }
+
+        let sourceStoreSnapshot = null;
+        const targetStoreId = storeId || (toolsToCheck.length > 0 ? (toolsToCheck[0].currentSite || toolsToCheck[0].store) : null);
+        if (targetStoreId) {
+            const storeDoc = await Store.findById(targetStoreId).lean();
+            if (storeDoc) {
+                sourceStoreSnapshot = {
+                    _id: storeDoc._id,
+                    name: storeDoc.name || '',
+                    storeCode: storeDoc.storeCode || '',
+                    location: storeDoc.location || ''
+                };
+            }
+        }
+
         const challan = new Challan({
             challanNumber,
-            challanType: 'Delivery',
+            challanType: 'Scrap',
             isScrapDC: true,
             status: 'Completed',
             indentNo: typeof indentNo === 'string' ? indentNo.trim() : (indentNo || ''),
+            project: projectSnapshot,
+            sourceStore: sourceStoreSnapshot,
             siteCode: cleanSiteCode || '',
             vendorCode: scrapDealerSnapshot.vendorCode,
             subcontractorName: scrapDealerSnapshot.name,
@@ -429,7 +716,7 @@ export const createScrapDeliveryChallan = async (data, user = {}) => {
             mrnNo,
             receiptDate,
             vendor: scrapDealerSnapshot,
-            store: storeId || null,
+            store: targetStoreId || null,
             challanDate: challanDate ? new Date(challanDate) : new Date(),
             deliveryDate: deliveryDate ? new Date(deliveryDate) : new Date(),
             remarks: remarks || `Scrap Transfer to ${scrapDealerSnapshot.name}`,
@@ -445,8 +732,7 @@ export const createScrapDeliveryChallan = async (data, user = {}) => {
         const saveOptions = session ? { session } : {};
         await challan.save(saveOptions);
 
-        // Update Tool Status to 'Scrapped' & set isScrapped: true
-        const toolIds = items.map(i => i.tool);
+        // Update Tool Status to 'Scrapped', isScrapped: true, and mark as Disposed
         const updateOptions = session ? { session } : {};
         await Tool.updateMany(
             { _id: { $in: toolIds } },
@@ -454,6 +740,11 @@ export const createScrapDeliveryChallan = async (data, user = {}) => {
                 $set: {
                     status: 'Scrapped',
                     isScrapped: true,
+                    isDisposed: true,
+                    disposedAt: new Date(),
+                    disposalChallanId: challan._id,
+                    disposalChallanNumber: challanNumber,
+                    scrapDealer: scrapDealer._id,
                     scrappedAt: new Date(),
                     scrappedBy: createdBy,
                     scrapReason: remarks || notes || `Dispatched to Scrap Dealer: ${scrapDealerSnapshot.name}`
@@ -517,8 +808,27 @@ export const createReturnChallan = async (data, user = {}) => {
         throw new Error('Reference Delivery Challan not found');
     }
 
-    if (referenceDc.status !== 'Active') {
-        throw new Error(`Return Challan cannot be created because DC status is '${referenceDc.status}' (Must be Active)`);
+    if (!['Active', 'Pending'].includes(referenceDc.status)) {
+        if (referenceDc.status === 'Completed' || referenceDc.status === 'Returned') {
+            throw new Error(`All tools for Delivery Challan ${referenceDc.challanNumber} have already been returned (DC is Completed)`);
+        }
+        throw new Error(`Return Challan cannot be created because DC status is '${referenceDc.status}' (Must be Active or Pending)`);
+    }
+
+    if (!items || items.length === 0) {
+        throw new Error('At least one tool item is required to create a Return Challan');
+    }
+
+    // Validate that none of the selected items were already returned
+    for (const item of items) {
+        const rawTool = item.tool?._id || item.tool || item._id;
+        const matchingDcItem = (referenceDc.items || []).find(ri => 
+            (rawTool && ri.tool && String(ri.tool) === String(rawTool)) ||
+            (item.toolId && ri.toolId === item.toolId)
+        );
+        if (matchingDcItem && (matchingDcItem.returnStatus === 'Returned' || matchingDcItem.returnStatus === 'Missing')) {
+            throw new Error(`Tool ${item.toolId || 'item'} has already been returned or marked missing against Delivery Challan ${referenceDc.challanNumber}`);
+        }
     }
 
     return await runInTransaction(async (session) => {
@@ -537,6 +847,7 @@ export const createReturnChallan = async (data, user = {}) => {
             challanNumber,
             challanType: 'Return',
             status: 'Completed',
+            project: referenceDc.project || null,
             vendor: referenceDc.vendor,
             store: referenceDc.store,
             challanDate: challanDate ? new Date(challanDate) : new Date(),
@@ -554,13 +865,40 @@ export const createReturnChallan = async (data, user = {}) => {
         const saveOptions = session ? { session } : {};
         await challan.save(saveOptions);
 
-        // Mark reference DC as Completed
-        referenceDc.status = 'Completed';
-        referenceDc.returnedCount = returnedItems.length;
-        referenceDc.missingCount = missingItems.length;
+        // Update individual item statuses on the reference DC
+        for (const item of items) {
+            const rawTool = item.tool?._id || item.tool || item._id;
+            const dcItem = (referenceDc.items || []).find(ri => 
+                (rawTool && ri.tool && String(ri.tool) === String(rawTool)) ||
+                (item.toolId && ri.toolId === item.toolId)
+            );
+            if (dcItem) {
+                dcItem.returnStatus = item.returnStatus; // 'Returned' | 'Missing'
+                dcItem.returnedAt = new Date();
+                dcItem.returnChallanNumber = challanNumber;
+                dcItem.returnChallanId = challan._id;
+                if (item.remarks) {
+                    dcItem.remarks = item.remarks;
+                }
+            }
+        }
+
+        // Calculate cumulative returned, missing, and pending counts on reference DC
+        let totalDcReturned = 0;
+        let totalDcMissing = 0;
+        for (const it of (referenceDc.items || [])) {
+            if (it.returnStatus === 'Returned') totalDcReturned++;
+            else if (it.returnStatus === 'Missing') totalDcMissing++;
+        }
+        const totalDcItems = (referenceDc.items || []).length;
+        const isAllReturnedOrMissing = (totalDcReturned + totalDcMissing) >= totalDcItems;
+
+        referenceDc.returnedCount = totalDcReturned;
+        referenceDc.missingCount = totalDcMissing;
+        referenceDc.status = isAllReturnedOrMissing ? 'Completed' : 'Pending';
         await referenceDc.save(saveOptions);
 
-        // If this DC was transferred from another DC (or chain of transfers), update all source DCs to 'Completed'
+        // If this DC was transferred from another DC (or chain of transfers), update all source DCs
         let currTransferSourceId = referenceDc.transferFromDcId;
         let currTransferSourceNumber = referenceDc.transferFromDcNumber;
         const visitedSourceKeys = new Set();
@@ -578,9 +916,9 @@ export const createReturnChallan = async (data, user = {}) => {
             }
             if (!sourceDc) break;
 
-            sourceDc.status = 'Completed';
-            sourceDc.returnedCount = returnedItems.length;
-            sourceDc.missingCount = missingItems.length;
+            sourceDc.returnedCount = totalDcReturned;
+            sourceDc.missingCount = totalDcMissing;
+            sourceDc.status = isAllReturnedOrMissing ? 'Completed' : 'Pending';
             await sourceDc.save(saveOptions);
 
             try {
@@ -588,8 +926,8 @@ export const createReturnChallan = async (data, user = {}) => {
                     user: createdBy,
                     action: 'Status Change',
                     referenceNumber: sourceDc.challanNumber,
-                    details: `Source transfer DC ${sourceDc.challanNumber} marked as Completed following return of ${referenceDc.challanNumber} via RC ${challanNumber}`,
-                    metadata: { rcNumber: challanNumber, activeDcNumber: referenceDc.challanNumber }
+                    details: `Source transfer DC ${sourceDc.challanNumber} status updated to ${sourceDc.status} (${totalDcReturned}/${totalDcItems} returned) following RC ${challanNumber}`,
+                    metadata: { rcNumber: challanNumber, activeDcNumber: referenceDc.challanNumber, status: sourceDc.status }
                 });
                 await sourceAuditLog.save(saveOptions);
             } catch (sourceAuditErr) {
@@ -600,81 +938,158 @@ export const createReturnChallan = async (data, user = {}) => {
             currTransferSourceNumber = sourceDc.transferFromDcNumber;
         }
 
+        const dcStoreId = referenceDc.store || referenceDc.sourceStore?._id || referenceDc.sourceStore || null;
+        let dcProjectId = referenceDc.project?._id || referenceDc.project || null;
+        if (!dcProjectId && dcStoreId) {
+            const dcStoreDoc = await Store.findById(dcStoreId).lean();
+            if (dcStoreDoc?.project) {
+                dcProjectId = dcStoreDoc.project;
+            }
+        }
+
+        if (!dcProjectId && referenceDc.items && referenceDc.items.length > 0) {
+            const firstRefToolId = referenceDc.items[0]?.tool;
+            if (firstRefToolId && mongoose.Types.ObjectId.isValid(String(firstRefToolId))) {
+                const firstToolDoc = await Tool.findById(firstRefToolId).lean();
+                if (firstToolDoc?.project) {
+                    dcProjectId = firstToolDoc.project;
+                }
+            }
+        }
+
+        // Helper to accurately resolve unique Tool ObjectId for any item record, preventing cross-project Tool ID ambiguity
+        const resolveToolObjectId = (item) => {
+            const rawTool = item.tool?._id || item.tool || item._id;
+            if (rawTool && mongoose.Types.ObjectId.isValid(String(rawTool))) {
+                return new mongoose.Types.ObjectId(String(rawTool));
+            }
+            // Match against referenceDc.items using toolId
+            if (item.toolId && referenceDc.items) {
+                const refItem = referenceDc.items.find(ri => 
+                    (ri.tool && String(ri.tool) === String(rawTool)) ||
+                    (ri.toolId && ri.toolId === item.toolId)
+                );
+                if (refItem && refItem.tool && mongoose.Types.ObjectId.isValid(String(refItem.tool))) {
+                    return new mongoose.Types.ObjectId(String(refItem.tool));
+                }
+            }
+            return null;
+        };
+
         // Process Returned Tools -> status: 'Available'
         if (returnedItems.length > 0) {
-            const returnedToolIds = returnedItems.map(i => i.tool?._id || i.tool).filter(Boolean);
-            const returnedToolIdStrings = returnedItems.map(i => i.toolId).filter(Boolean);
+            const returnedToolIds = returnedItems.map(resolveToolObjectId).filter(Boolean);
+            if (returnedToolIds.length > 0) {
+                const queryOptions = session ? { session } : {};
+                const toolsToValidate = await Tool.find({ _id: { $in: returnedToolIds } }, null, queryOptions);
+                const validReturnedToolIds = [];
 
-            await Tool.updateMany(
-                {
-                    $or: [
-                        { _id: { $in: returnedToolIds } },
-                        { toolId: { $in: returnedToolIdStrings } }
-                    ]
-                },
-                { $set: { status: 'Available' } },
-                session ? { session } : {}
-            );
+                for (const t of toolsToValidate) {
+                    const toolProjId = t.project?._id || t.project;
+                    const toolSiteId = t.currentSite?._id || t.currentSite || t.store;
+                    const projectMismatch = (dcProjectId && toolProjId && String(toolProjId) !== String(dcProjectId));
+                    const storeMismatch = (dcStoreId && toolSiteId && String(toolSiteId) !== String(dcStoreId));
 
-            const returnLogs = returnedItems.map(item => ({
-                tool: item.tool?._id || item.tool,
-                toolIdStr: item.toolId,
-                description: item.description || '',
-                movementType: 'Return',
-                from: referenceDc.vendor?.name || 'Subcontractor',
-                to: 'Store',
-                referenceNumber: challanNumber,
-                date: new Date(),
-                user: createdBy.name,
-                remarks: item.remarks || `Returned via ${challanNumber}`
-            }));
+                    if (!projectMismatch && !storeMismatch) {
+                        validReturnedToolIds.push(t._id);
+                    } else {
+                        console.warn(`[createReturnChallan] Tool ${t._id} (${t.toolId}) does not match DC project/store context; skipping status update.`);
+                    }
+                }
+
+                if (validReturnedToolIds.length > 0) {
+                    await Tool.updateMany(
+                        { _id: { $in: validReturnedToolIds } },
+                        { $set: { status: 'Available' } },
+                        session ? { session } : {}
+                    );
+                }
+            }
+
+            const returnLogs = returnedItems.map(item => {
+                const toolObjId = resolveToolObjectId(item);
+                return {
+                    tool: toolObjId,
+                    toolIdStr: item.toolId,
+                    description: item.description || '',
+                    movementType: 'Return',
+                    from: referenceDc.vendor?.name || 'Subcontractor',
+                    to: 'Store',
+                    referenceNumber: challanNumber,
+                    date: new Date(),
+                    user: createdBy.name,
+                    remarks: item.remarks || `Returned via ${challanNumber}`
+                };
+            });
             await ToolMovement.insertMany(returnLogs, session ? { session } : {});
         }
 
         // Process Missing Tools -> status: 'Missing' & save in MissingTool
         if (missingItems.length > 0) {
-            const missingToolIds = missingItems.map(i => i.tool?._id || i.tool).filter(Boolean);
-            const missingToolIdStrings = missingItems.map(i => i.toolId).filter(Boolean);
+            const missingToolIds = missingItems.map(resolveToolObjectId).filter(Boolean);
+            if (missingToolIds.length > 0) {
+                const queryOptions = session ? { session } : {};
+                const toolsToValidate = await Tool.find({ _id: { $in: missingToolIds } }, null, queryOptions);
+                const validMissingToolIds = [];
 
-            await Tool.updateMany(
-                {
-                    $or: [
-                        { _id: { $in: missingToolIds } },
-                        { toolId: { $in: missingToolIdStrings } }
-                    ]
-                },
-                { $set: { status: 'Missing' } },
-                session ? { session } : {}
-            );
+                for (const t of toolsToValidate) {
+                    const toolProjId = t.project?._id || t.project;
+                    const toolSiteId = t.currentSite?._id || t.currentSite || t.store;
+                    const projectMismatch = (dcProjectId && toolProjId && String(toolProjId) !== String(dcProjectId));
+                    const storeMismatch = (dcStoreId && toolSiteId && String(toolSiteId) !== String(dcStoreId));
 
-            const missingLogs = missingItems.map(item => ({
-                tool: item.tool?._id || item.tool,
-                toolIdStr: item.toolId,
-                description: item.description || '',
-                movementType: 'Missing',
-                from: referenceDc.vendor?.name || 'Subcontractor',
-                to: 'Missing',
-                referenceNumber: challanNumber,
-                date: new Date(),
-                user: createdBy.name,
-                remarks: item.remarks || `Flagged as missing on return ${challanNumber}`
-            }));
+                    if (!projectMismatch && !storeMismatch) {
+                        validMissingToolIds.push(t._id);
+                    } else {
+                        console.warn(`[createReturnChallan] Tool ${t._id} (${t.toolId}) does not match DC project/store context; skipping status update to prevent cross-project corruption.`);
+                    }
+                }
+
+                if (validMissingToolIds.length > 0) {
+                    await Tool.updateMany(
+                        { _id: { $in: validMissingToolIds } },
+                        { $set: { status: 'Missing' } },
+                        session ? { session } : {}
+                    );
+                }
+            }
+
+            const missingLogs = missingItems.map(item => {
+                const toolObjId = resolveToolObjectId(item);
+                return {
+                    tool: toolObjId,
+                    toolIdStr: item.toolId,
+                    description: item.description || '',
+                    movementType: 'Missing',
+                    from: referenceDc.vendor?.name || 'Subcontractor',
+                    to: 'Missing',
+                    referenceNumber: challanNumber,
+                    date: new Date(),
+                    user: createdBy.name,
+                    remarks: item.remarks || `Flagged as missing on return ${challanNumber}`
+                };
+            });
             await ToolMovement.insertMany(missingLogs, session ? { session } : {});
 
-            const missingRecords = missingItems.map(item => ({
-                tool: item.tool?._id || item.tool,
-                toolIdStr: item.toolId,
-                description: item.description || '',
-                toolCode: item.toolCode || '',
-                vendor: referenceDc.vendor?._id,
-                vendorName: referenceDc.vendor?.name,
-                dcNumber: referenceDc.challanNumber,
-                rcNumber: challanNumber,
-                missingDate: new Date(),
-                reportedBy: createdBy.name,
-                remarks: item.remarks || 'Tool not returned against Delivery Challan',
-                status: 'Missing'
-            }));
+            const missingRecords = missingItems.map(item => {
+                const toolObjId = resolveToolObjectId(item);
+                return {
+                    tool: toolObjId,
+                    toolIdStr: item.toolId,
+                    description: item.description || '',
+                    toolCode: item.toolCode || '',
+                    project: dcProjectId || null,
+                    store: dcStoreId || null,
+                    vendor: referenceDc.vendor?._id,
+                    vendorName: referenceDc.vendor?.name,
+                    dcNumber: referenceDc.challanNumber,
+                    rcNumber: challanNumber,
+                    missingDate: new Date(),
+                    reportedBy: createdBy.name,
+                    remarks: item.remarks || 'Tool not returned against Delivery Challan',
+                    status: 'Missing'
+                };
+            });
             await MissingTool.insertMany(missingRecords, session ? { session } : {});
         }
 
@@ -704,9 +1119,101 @@ export const createReturnChallan = async (data, user = {}) => {
 };
 
 /**
+ * Self-healing reconciliation: Ensures tools marked as 'Missing' actually
+ * correspond to a valid Return Challan item / MissingTool record for their
+ * specific project and store. Reverts erroneously marked tools with the same
+ * toolId in other projects back to 'Available'.
+ */
+export const reconcileMissingToolStatuses = async () => {
+    try {
+        const missingTools = await Tool.find({ status: 'Missing', isDeleted: { $ne: true }, isScrapped: { $ne: true } })
+            .select('_id toolId project currentSite status')
+            .lean();
+
+        if (!missingTools || missingTools.length === 0) return;
+
+        const toolsToRestore = [];
+
+        for (const t of missingTools) {
+            // Check 1: Is there a MissingTool record explicitly pointing to this tool's unique _id, or matching toolIdStr + project?
+            const missingConditions = [
+                { tool: t._id },
+                { tool: t._id.toString() }
+            ];
+            if (t.project) {
+                missingConditions.push({ toolIdStr: t.toolId, project: t.project });
+            }
+            if (t.currentSite) {
+                missingConditions.push({ toolIdStr: t.toolId, store: t.currentSite });
+            }
+
+            const missingRecord = await MissingTool.findOne({
+                $or: missingConditions,
+                status: 'Missing'
+            }).lean();
+            if (missingRecord) continue;
+
+            // Check 2: Is this tool's unique _id in any Return Challan with returnStatus: 'Missing'?
+            const rcConditions = [
+                {
+                    items: {
+                        $elemMatch: {
+                            $or: [
+                                { tool: t._id },
+                                { tool: t._id.toString() }
+                            ],
+                            returnStatus: 'Missing'
+                        }
+                    }
+                }
+            ];
+            if (t.project) {
+                rcConditions.push({
+                    $or: [
+                        { project: t.project },
+                        { 'project._id': t.project },
+                        { 'project._id': t.project.toString() }
+                    ],
+                    items: {
+                        $elemMatch: {
+                            toolId: t.toolId,
+                            returnStatus: 'Missing'
+                        }
+                    }
+                });
+            }
+
+            const rcWithTool = await Challan.findOne({
+                challanType: 'Return',
+                $or: rcConditions
+            }).lean();
+            if (rcWithTool) continue;
+
+            // If neither exists, this tool record in another project was erroneously marked as Missing
+            toolsToRestore.push(t._id);
+        }
+
+        if (toolsToRestore.length > 0) {
+            console.log(`[reconcileMissingToolStatuses] Restoring ${toolsToRestore.length} falsely marked missing tool(s) back to Available:`, toolsToRestore);
+            await Tool.updateMany(
+                { _id: { $in: toolsToRestore } },
+                { $set: { status: 'Available' } }
+            );
+        }
+    } catch (err) {
+        console.error('[reconcileMissingToolStatuses] Error reconciling missing tool statuses:', err.message);
+    }
+};
+
+/**
  * Get paginated & filtered Challans
  */
 export const getChallans = async (params = {}) => {
+    // Self-healing: sync any past unlinked store tool transfers to Store Transfer Challans
+    await syncMissingStoreTransferChallans();
+    // Self-healing: reconcile any missing tool statuses across projects
+    await reconcileMissingToolStatuses();
+
     const {
         page = 1,
         limit = 20,
@@ -728,6 +1235,9 @@ export const getChallans = async (params = {}) => {
                 { challanNumber: { $regex: search, $options: 'i' } },
                 { 'vendor.name': { $regex: search, $options: 'i' } },
                 { 'vendor.vendorCode': { $regex: search, $options: 'i' } },
+                { 'sourceStore.name': { $regex: search, $options: 'i' } },
+                { 'destinationStore.name': { $regex: search, $options: 'i' } },
+                { 'project.name': { $regex: search, $options: 'i' } },
                 { remarks: { $regex: search, $options: 'i' } },
                 { referenceDcNumber: { $regex: search, $options: 'i' } },
                 { transferFromDcNumber: { $regex: search, $options: 'i' } },
@@ -768,7 +1278,22 @@ export const getChallans = async (params = {}) => {
     }
 
     if (challanType && challanType !== 'All') {
-        conditions.push({ challanType });
+        if (['scrap', 'scrapdc', 'sdc'].includes(String(challanType).toLowerCase())) {
+            conditions.push({
+                $or: [
+                    { isScrapDC: true },
+                    { challanType: 'Scrap' },
+                    { challanNumber: { $regex: '^SDC-', $options: 'i' } }
+                ]
+            });
+        } else if (challanType === 'Delivery') {
+            conditions.push({
+                challanType: 'Delivery',
+                isScrapDC: { $ne: true }
+            });
+        } else {
+            conditions.push({ challanType });
+        }
     }
 
     if (startDate || endDate) {
@@ -835,8 +1360,8 @@ export const updateDeliveryChallan = async (id, data, user = {}) => {
     if (!challan) {
         throw new Error('Challan not found');
     }
-    if (challan.challanType !== 'Delivery' || challan.status !== 'Active') {
-        throw new Error('Only active Delivery Challans can be edited');
+    if (challan.challanType !== 'Delivery' || (challan.status !== 'Active' && challan.status !== 'Pending')) {
+        throw new Error('Only active or pending Delivery Challans can be edited');
     }
 
     if (data.challanDate) challan.challanDate = new Date(data.challanDate);
