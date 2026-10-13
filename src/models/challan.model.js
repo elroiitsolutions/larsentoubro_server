@@ -21,6 +21,7 @@ const challanSchema = new mongoose.Schema({
     challanType: { type: String, enum: ['Delivery', 'Return'], required: true },
     status: { type: String, enum: ['Active', 'Completed', 'Cancelled', 'Transfer', 'Returned'], default: 'Active', index: true },
     isScrapDC: { type: Boolean, default: false },
+    indentNo: { type: String, default: '' },
     siteCode: { type: String, default: '' },
     vendorCode: { type: String, default: '' },
     subcontractorName: { type: String, default: '' },
