@@ -335,6 +335,7 @@ export const createDeliveryChallan = async (data, user = {}) => {
         transferFromDcId,
         vendorId,
         storeId,
+        indentNo = '',
         siteCode = '',
         vendorCode = '',
         subcontractorName = '',
@@ -439,15 +440,29 @@ export const createDeliveryChallan = async (data, user = {}) => {
         };
 
         let projectSnapshot = null;
-        if (sourceDc && sourceDc.project) {
+        if (sourceDc && sourceDc.project && sourceDc.project._id) {
             projectSnapshot = sourceDc.project;
         } else if (toolsToCheck.length > 0 && toolsToCheck[0].project) {
-            const projDoc = await Project.findById(toolsToCheck[0].project).lean();
-            if (projDoc) {
+            const rawProj = toolsToCheck[0].project?._id || toolsToCheck[0].project;
+            if (rawProj && mongoose.Types.ObjectId.isValid(String(rawProj))) {
+                const projDoc = await Project.findById(rawProj).lean();
+                if (projDoc) {
+                    projectSnapshot = {
+                        _id: projDoc._id,
+                        name: projDoc.name || '',
+                        projectCode: projDoc.projectCode || ''
+                    };
+                }
+            }
+        }
+        if (!projectSnapshot && storeId && mongoose.Types.ObjectId.isValid(String(storeId))) {
+            const storeDoc = await Store.findById(storeId).populate('project').lean();
+            if (storeDoc && storeDoc.project) {
+                const p = storeDoc.project;
                 projectSnapshot = {
-                    _id: projDoc._id,
-                    name: projDoc.name || '',
-                    projectCode: projDoc.projectCode || ''
+                    _id: p._id || p,
+                    name: p.name || '',
+                    projectCode: p.projectCode || ''
                 };
             }
         }
@@ -456,6 +471,7 @@ export const createDeliveryChallan = async (data, user = {}) => {
             challanNumber,
             challanType: 'Delivery',
             status: 'Active',
+            indentNo: typeof indentNo === 'string' ? indentNo.trim() : (indentNo || ''),
             project: projectSnapshot,
             siteCode: cleanSiteCode,
             vendorCode: vendorCode || vendorDoc.vendorCode,
@@ -575,6 +591,7 @@ export const createScrapDeliveryChallan = async (data, user = {}) => {
     const {
         scrapDealerId,
         storeId,
+        indentNo = '',
         siteCode = '',
         locationChainage = '',
         workFrontLocation = '',
@@ -688,6 +705,7 @@ export const createScrapDeliveryChallan = async (data, user = {}) => {
             challanType: 'Scrap',
             isScrapDC: true,
             status: 'Completed',
+            indentNo: typeof indentNo === 'string' ? indentNo.trim() : (indentNo || ''),
             project: projectSnapshot,
             sourceStore: sourceStoreSnapshot,
             siteCode: cleanSiteCode || '',
@@ -935,7 +953,7 @@ export const createReturnChallan = async (data, user = {}) => {
         }
 
         const dcStoreId = referenceDc.store || referenceDc.sourceStore?._id || referenceDc.sourceStore || null;
-        let dcProjectId = referenceDc.project?._id || referenceDc.project || null;
+        let dcProjectId = (referenceDc.project && referenceDc.project._id) ? referenceDc.project._id : (mongoose.Types.ObjectId.isValid(String(referenceDc.project)) ? referenceDc.project : null);
         if (!dcProjectId && dcStoreId) {
             const dcStoreDoc = await Store.findById(dcStoreId).lean();
             if (dcStoreDoc?.project) {
@@ -983,10 +1001,14 @@ export const createReturnChallan = async (data, user = {}) => {
                 for (const t of toolsToValidate) {
                     const toolProjId = t.project?._id || t.project;
                     const toolSiteId = t.currentSite?._id || t.currentSite || t.store;
-                    const projectMismatch = (dcProjectId && toolProjId && String(toolProjId) !== String(dcProjectId));
-                    const storeMismatch = (dcStoreId && toolSiteId && String(toolSiteId) !== String(dcStoreId));
+                    const cleanDcProjectId = dcProjectId && mongoose.Types.ObjectId.isValid(String(dcProjectId)) ? String(dcProjectId) : null;
+                    const cleanDcStoreId = dcStoreId && mongoose.Types.ObjectId.isValid(String(dcStoreId)) ? String(dcStoreId) : null;
 
-                    if (!projectMismatch && !storeMismatch) {
+                    const projectMismatch = (cleanDcProjectId && toolProjId && String(toolProjId) !== cleanDcProjectId);
+                    const storeMismatch = (cleanDcStoreId && toolSiteId && String(toolSiteId) !== cleanDcStoreId);
+                    const isExplicitDcTool = (referenceDc.items || []).some(ri => ri.tool && String(ri.tool) === String(t._id));
+
+                    if (isExplicitDcTool || (!projectMismatch && !storeMismatch)) {
                         validReturnedToolIds.push(t._id);
                     } else {
                         console.warn(`[createReturnChallan] Tool ${t._id} (${t.toolId}) does not match DC project/store context; skipping status update.`);
@@ -1031,10 +1053,14 @@ export const createReturnChallan = async (data, user = {}) => {
                 for (const t of toolsToValidate) {
                     const toolProjId = t.project?._id || t.project;
                     const toolSiteId = t.currentSite?._id || t.currentSite || t.store;
-                    const projectMismatch = (dcProjectId && toolProjId && String(toolProjId) !== String(dcProjectId));
-                    const storeMismatch = (dcStoreId && toolSiteId && String(toolSiteId) !== String(dcStoreId));
+                    const cleanDcProjectId = dcProjectId && mongoose.Types.ObjectId.isValid(String(dcProjectId)) ? String(dcProjectId) : null;
+                    const cleanDcStoreId = dcStoreId && mongoose.Types.ObjectId.isValid(String(dcStoreId)) ? String(dcStoreId) : null;
 
-                    if (!projectMismatch && !storeMismatch) {
+                    const projectMismatch = (cleanDcProjectId && toolProjId && String(toolProjId) !== cleanDcProjectId);
+                    const storeMismatch = (cleanDcStoreId && toolSiteId && String(toolSiteId) !== cleanDcStoreId);
+                    const isExplicitDcTool = (referenceDc.items || []).some(ri => ri.tool && String(ri.tool) === String(t._id));
+
+                    if (isExplicitDcTool || (!projectMismatch && !storeMismatch)) {
                         validMissingToolIds.push(t._id);
                     } else {
                         console.warn(`[createReturnChallan] Tool ${t._id} (${t.toolId}) does not match DC project/store context; skipping status update to prevent cross-project corruption.`);
@@ -1202,6 +1228,73 @@ export const reconcileMissingToolStatuses = async () => {
 };
 
 /**
+ * Self-healing reconciliation: Ensures tools marked as 'Moving' that have
+ * actually been returned via a completed Return Challan are reverted back to 'Available',
+ * provided they are not currently active on a newer Delivery Challan.
+ */
+export const reconcileReturnedToolStatuses = async () => {
+    try {
+        const movingTools = await Tool.find({
+            status: { $in: ['Moving', 'In Transit', 'transit'] },
+            isDeleted: { $ne: true },
+            isScrapped: { $ne: true }
+        }).select('_id toolId status').lean();
+
+        if (!movingTools || movingTools.length === 0) return;
+
+        const toolsToRestore = [];
+
+        for (const t of movingTools) {
+            // Find latest Return Challan containing this tool where returnStatus is 'Returned'
+            const latestRc = await Challan.findOne({
+                challanType: 'Return',
+                status: 'Completed',
+                items: {
+                    $elemMatch: {
+                        $or: [
+                            { tool: t._id },
+                            { tool: t._id.toString() }
+                        ],
+                        returnStatus: 'Returned'
+                    }
+                }
+            }).sort({ createdAt: -1 }).select('createdAt items').lean();
+
+            if (!latestRc) continue;
+
+            // Check if there is a newer active Delivery Challan dispatching this tool after this return
+            const newerActiveDc = await Challan.findOne({
+                challanType: 'Delivery',
+                status: { $in: ['Active', 'Pending'] },
+                createdAt: { $gt: latestRc.createdAt },
+                items: {
+                    $elemMatch: {
+                        $or: [
+                            { tool: t._id },
+                            { tool: t._id.toString() }
+                        ]
+                    }
+                }
+            }).select('_id').lean();
+
+            if (!newerActiveDc) {
+                toolsToRestore.push(t._id);
+            }
+        }
+
+        if (toolsToRestore.length > 0) {
+            console.log(`[reconcileReturnedToolStatuses] Restoring ${toolsToRestore.length} returned tool(s) back to Available:`, toolsToRestore);
+            await Tool.updateMany(
+                { _id: { $in: toolsToRestore } },
+                { $set: { status: 'Available' } }
+            );
+        }
+    } catch (err) {
+        console.error('[reconcileReturnedToolStatuses] Error reconciling returned tool statuses:', err.message);
+    }
+};
+
+/**
  * Get paginated & filtered Challans
  */
 export const getChallans = async (params = {}) => {
@@ -1209,6 +1302,8 @@ export const getChallans = async (params = {}) => {
     await syncMissingStoreTransferChallans();
     // Self-healing: reconcile any missing tool statuses across projects
     await reconcileMissingToolStatuses();
+    // Self-healing: reconcile any returned tool statuses
+    await reconcileReturnedToolStatuses();
 
     const {
         page = 1,

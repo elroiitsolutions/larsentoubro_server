@@ -29,6 +29,7 @@ const challanSchema = new mongoose.Schema({
     challanType: { type: String, enum: ['Delivery', 'Return', 'Transfer', 'Scrap'], required: true },
     status: { type: String, enum: ['Active', 'Completed', 'Cancelled', 'Transfer', 'Returned', 'Pending'], default: 'Active', index: true },
     isScrapDC: { type: Boolean, default: false },
+    indentNo: { type: String, default: '' },
     isStoreTransfer: { type: Boolean, default: false },
     project: {
         _id: { type: mongoose.Schema.Types.ObjectId, ref: 'Project' },
