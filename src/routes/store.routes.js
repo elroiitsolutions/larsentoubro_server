@@ -18,7 +18,7 @@ import {
     transferTools
 } from '../controllers/tool.controller.js';
 import { importController } from '../controllers/import.controller.js';
-import { authenticate, requirePagePermission, requireAdmin } from '../middleware/auth.middleware.js';
+import { authenticate, requirePagePermission, requireAdmin, restrictInspectionUser } from '../middleware/auth.middleware.js';
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -40,7 +40,7 @@ router.get('/:storeId/tools', getToolsByStoreId);
 router.post('/:storeId/tools', createToolInStore);
 router.post('/:storeId/tools/bulk-edit', requireAdmin, bulkEditTools);
 router.post('/:storeId/tools/bulk-delete', requireAdmin, bulkDeleteTools);
-router.post('/:storeId/tools/transfer', transferTools);
+router.post('/:storeId/tools/transfer', restrictInspectionUser('transferring tools'), transferTools);
 
 // Store-Scoped Tool Bulk Import Endpoints
 router.get('/:storeId/tools/bulk-import/sample', importController.downloadStoreToolsSample);

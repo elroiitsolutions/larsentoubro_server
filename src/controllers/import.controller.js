@@ -1,7 +1,5 @@
 import * as xlsx from 'xlsx';
-import QRCode from 'qrcode';
 import { Tool } from '../models/tool.model.js';
-import { Project } from '../models/project.model.js';
 import { Store } from '../models/store.model.js';
 import { ImportJob } from '../models/importJob.model.js';
 import ToolIdGenerator from '../utils/tool-id.js';
@@ -374,65 +372,97 @@ const streamImportJobProgress = async (req, res, next) => {
 };
 
 /**
- * GET created tools for an import job, with QR Code data URLs.
+ * GET created tools for an import job with pagination.
+ * Returns lightweight metadata + qrLink.
+ * QR code images are rendered in the browser on-demand to avoid massive payloads and CPU event-loop blocking.
  */
 const getImportedJobTools = async (req, res, next) => {
     try {
         const { storeId, jobId } = req.params;
+        const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+        const pageSize = Math.min(200, Math.max(1, parseInt(req.query.pageSize, 10) || 24));
+        const search = req.query.search ? String(req.query.search).trim() : '';
+        const filter = req.query.filter || 'all'; // 'all' | 'printed' | 'unprinted'
+        const offset = req.query.offset !== undefined ? parseInt(req.query.offset, 10) : undefined;
+        const limit = req.query.limit !== undefined ? Math.min(200, parseInt(req.query.limit, 10)) : undefined;
+
         const job = await ImportJob.findById(jobId).lean();
         if (!job) {
             return res.status(404).json({ success: false, message: 'Import job not found' });
         }
 
         const toolIds = job.createdToolIds || job.progress?.createdToolIds || [];
-        let tools = [];
-
+        
+        let query = {};
         if (toolIds.length > 0) {
-            tools = await Tool.find({
-                toolId: { $in: toolIds },
-                isDeleted: { $ne: true }
-            })
-            .populate('project', 'name code')
-            .populate('currentSite', 'name siteName code')
-            .lean();
+            query.toolId = { $in: toolIds };
         } else {
-            // Fallback: fetch tools created in the store around job creation time
-            tools = await Tool.find({
-                currentSite: storeId,
-                createdAt: { $gte: job.createdAt },
-                isDeleted: { $ne: true }
-            })
-            .sort({ createdAt: -1 })
-            .limit(job.progress?.successCount || 100)
-            .populate('project', 'name code')
-            .populate('currentSite', 'name siteName code')
-            .lean();
+            // Fallback for ongoing or legacy jobs
+            query.currentSite = storeId;
+            query.createdAt = { $gte: job.createdAt };
+        }
+        query.isDeleted = { $ne: true };
+
+        // Overall stats (printed vs unprinted) within this import job
+        const [totalCount, printedCount] = await Promise.all([
+            Tool.countDocuments(query),
+            Tool.countDocuments({ ...query, isPrinted: true })
+        ]);
+        const unprintedCount = Math.max(0, totalCount - printedCount);
+
+        // Apply filters
+        if (filter === 'printed') {
+            query.isPrinted = true;
+        } else if (filter === 'unprinted') {
+            query.isPrinted = { $ne: true };
         }
 
-        // Generate base64 Data URLs for QR codes
-        const toolsWithQr = await Promise.all(tools.map(async (t) => {
-            const qrLink = t.qrLink || ToolIdGenerator.generateQrLink(t.toolId);
-            let qrCodeDataUrl = '';
-            try {
-                qrCodeDataUrl = await QRCode.toDataURL(qrLink, {
-                    errorCorrectionLevel: 'H',
-                    margin: 1,
-                    width: 256,
-                    color: { light: '#00000000' }
-                });
-            } catch (err) {
-                console.error(`QR Code generation failed for ${t.toolId}:`, err);
-            }
-            return {
-                ...t,
-                qrLink,
-                qrCodeDataUrl
-            };
+        if (search) {
+            query.$or = [
+                { toolId: { $regex: search, $options: 'i' } },
+                { description: { $regex: search, $options: 'i' } },
+                { toolCode: { $regex: search, $options: 'i' } }
+            ];
+        }
+
+        const filteredTotal = await Tool.countDocuments(query);
+
+        // Determine skip & limit (supports page/pageSize OR direct offset/limit)
+        const effectiveLimit = limit !== undefined ? limit : pageSize;
+        const effectiveSkip = offset !== undefined ? offset : (page - 1) * effectiveLimit;
+        const totalPages = Math.ceil(filteredTotal / effectiveLimit) || 1;
+
+        const tools = await Tool.find(query)
+            .sort({ serialNumber: 1, createdAt: 1 })
+            .skip(effectiveSkip)
+            .limit(effectiveLimit)
+            .select('toolId serialNumber description toolCode dateOfSupply validityPeriod qrLink isPrinted currentSite project subcontractorName safeWorkingLoad capacity metalType toolVariant makeYear')
+            .lean();
+
+        // Ensure every tool has a qrLink populated
+        const toolsWithLink = tools.map(t => ({
+            ...t,
+            qrLink: t.qrLink || ToolIdGenerator.generateQrLink(t.toolId)
         }));
 
         return res.status(200).json({
             success: true,
-            data: toolsWithQr
+            data: {
+                tools: toolsWithLink,
+                pagination: {
+                    page: offset !== undefined ? Math.floor(offset / effectiveLimit) + 1 : page,
+                    pageSize: effectiveLimit,
+                    total: filteredTotal,
+                    totalPages
+                },
+                stats: {
+                    total: totalCount,
+                    printedCount,
+                    unprintedCount
+                },
+                jobStatus: job.status,
+                progress: job.progress
+            }
         });
     } catch (error) {
         next(error);

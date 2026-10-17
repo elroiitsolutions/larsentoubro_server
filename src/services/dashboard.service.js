@@ -436,7 +436,7 @@ export const getDashboardStats = async (filters = {}, user = null) => {
         { status: 'Under Inspection', count: underInspection, color: '#8b5cf6' },
         { status: 'Inspection Due', count: inspectionDue, color: '#f59e0b' },
         { status: 'Expired', count: expired, color: '#ef4444' },
-        { status: 'Damaged / Repair', count: damagedRepair, color: '#f97316' },
+        { status: 'Repair', count: damagedRepair, color: '#f97316' },
         { status: 'Scrap', count: scrap, color: '#64748b' }
     ];
 
@@ -502,6 +502,7 @@ export const getDashboardStats = async (filters = {}, user = null) => {
             inspectionDue,
             expired,
             damagedRepair,
+            repair: damagedRepair,
             scrap,
             usable,
             unusable,

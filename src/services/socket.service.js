@@ -77,6 +77,20 @@ class RealtimeService extends EventEmitter {
         });
     }
 
+    // Send payload to specific user by ID
+    notifyUser(userId, event, data) {
+        const payload = { event, data };
+        const dataStr = `data: ${JSON.stringify(payload)}\n\n`;
+
+        this.sseClients.forEach(({ res, userId: clientUserId }) => {
+            if (clientUserId && String(clientUserId) === String(userId)) {
+                try {
+                    res.write(dataStr);
+                } catch (e) {}
+            }
+        });
+    }
+
     // Send payload to specific request or user
     notifyRequest(requestId, event, data) {
         const payload = { event, data, requestId };

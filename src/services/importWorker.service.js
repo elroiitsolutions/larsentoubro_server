@@ -2,7 +2,7 @@ import { Tool } from '../models/tool.model.js';
 import { ImportJob } from '../models/importJob.model.js';
 import ToolIdGenerator from '../utils/tool-id.js';
 
-const BATCH_SIZE = 2000;
+const BATCH_SIZE = 1000;
 
 // In-memory event emitter for SSE progress streams
 const jobListeners = new Map();

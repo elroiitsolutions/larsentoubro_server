@@ -25,8 +25,18 @@ const userSchema = new mongoose.Schema({
     },
     role: {
         type: String,
-        enum: ['Admin', 'User', 'Vendor', 'Guest'],
+        enum: ['Admin', 'User', 'Subuser', 'Vendor', 'Guest'],
         default: 'User'
+    },
+    parentUser: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        default: null,
+        index: true
+    },
+    canCreateUser: {
+        type: Boolean,
+        default: false
     },
     user_id: {
         type: String,
@@ -37,6 +47,10 @@ const userSchema = new mongoose.Schema({
     allowedPages: {
         type: [String],
         default: ["/dashboard", "/projects", "/stores"]
+    },
+    hasInspectionAccess: {
+        type: Boolean,
+        default: false
     },
     projects: [{
         type: mongoose.Schema.Types.ObjectId,

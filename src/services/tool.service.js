@@ -847,6 +847,13 @@ const bulkScrapTools = async ({ toolIds, reason = '', user }) => {
         throw new Error(`Cannot scrap tool(s) [${labels}] because they are currently in transit / moving`);
     }
 
+    // Validation 4: Cannot scrap tools that are currently under Repair without inspection
+    const repairTools = tools.filter(t => (t.status || '').toLowerCase() === 'repair');
+    if (repairTools.length > 0) {
+        const labels = repairTools.map(t => t.toolId || t._id).join(', ');
+        throw new Error(`Tool(s) [${labels}] are currently under Repair. To move a tool under repair to scrap, complete the inspection workflow.`);
+    }
+
     const userInfo = {
         _id: user?._id || null,
         name: user?.name || user?.username || 'System User',
@@ -1572,6 +1579,12 @@ const transferTools = async ({ sourceStoreId, destinationStoreId, toolIds, remar
         throw new Error(`Cannot transfer tools: Tool(s) [${unprintedLabels}] are not marked as Printed. All selected tools must be printed before performing an inter-store Transfer.`);
     }
 
+    const repairTools = toolsToTransfer.filter(t => (t.status || '').toLowerCase() === 'repair');
+    if (repairTools.length > 0) {
+        const labels = repairTools.map(t => t.toolId || t.toolCode || t.description || t._id.toString()).join(', ');
+        throw new Error(`Cannot transfer tools: Tool(s) [${labels}] are currently under Repair and cannot be transferred.`);
+    }
+
     const { createStoreTransferChallan } = await import('./challan.service.js');
     const transferChallan = await createStoreTransferChallan({
         sourceStore: {
@@ -1682,6 +1695,263 @@ const transferTools = async ({ sourceStoreId, destinationStoreId, toolIds, remar
     };
 };
 
+const parseFlexibleDateHelper = (raw) => {
+    if (!raw) return null;
+    if (raw instanceof Date && !isNaN(raw.getTime())) return raw;
+    const str = String(raw).trim();
+    if (!str || str === 'N/A' || str === '-') return null;
+
+    if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
+        const parsed = new Date(str);
+        if (!isNaN(parsed.getTime())) return parsed;
+    }
+
+    const parts = str.split(/[\/\-\.]/);
+    if (parts.length === 3) {
+        let p0 = parseInt(parts[0], 10);
+        let p1 = parseInt(parts[1], 10);
+        let p2 = parseInt(parts[2], 10);
+        if (!isNaN(p0) && !isNaN(p1) && !isNaN(p2)) {
+            if (p0 >= 1970 && p0 <= 2100) {
+                const d = new Date(p0, p1 - 1, p2);
+                if (!isNaN(d.getTime())) return d;
+            }
+            if (p2 >= 1970 && p2 <= 2100) {
+                if (p0 > 12) {
+                    const d = new Date(p2, p1 - 1, p0);
+                    if (!isNaN(d.getTime())) return d;
+                }
+                const d = new Date(p2, p1 - 1, p0);
+                if (!isNaN(d.getTime())) return d;
+            }
+        }
+    }
+
+    const fallback = new Date(str);
+    if (!isNaN(fallback.getTime())) return fallback;
+    return null;
+};
+
+const inspectTools = async ({ toolIds, result, action, validation, remarks = '', user }) => {
+    if (!Array.isArray(toolIds) || toolIds.length === 0) {
+        throw new Error('Please select at least one tool to inspect');
+    }
+
+    if (!['Pass', 'Fail'].includes(result)) {
+        throw new Error("Inspection result must be either 'Pass' or 'Fail'");
+    }
+
+    if (result === 'Pass') {
+        if (!validation || typeof validation !== 'string' || !validation.trim()) {
+            throw new Error('Validation period is required when marking inspection as Pass');
+        }
+    } else {
+        if (!['Repair', 'Scrap'].includes(action)) {
+            throw new Error("Action for failed inspection must be either 'Repair' or 'Scrap'");
+        }
+    }
+
+    const tools = await Tool.find({ _id: { $in: toolIds } });
+    if (!tools || tools.length === 0) {
+        throw new Error('No tools found for the selected IDs');
+    }
+
+    // Validation 1: Cannot inspect tools that are already scrapped or disposed
+    const scrappedOrDisposed = tools.filter(t => t.isScrapped || t.isDisposed);
+    if (scrappedOrDisposed.length > 0) {
+        const labels = scrappedOrDisposed.map(t => t.toolId || t._id).join(', ');
+        throw new Error(`Tool(s) [${labels}] are already marked as Scrapped or Disposed and cannot be inspected`);
+    }
+
+    // Validation 2: Cannot inspect tools in transit / moving
+    const movingTools = tools.filter(t => ['moving', 'in transit', 'transit'].includes((t.status || '').toLowerCase()));
+    if (movingTools.length > 0) {
+        const labels = movingTools.map(t => t.toolId || t._id).join(', ');
+        throw new Error(`Tool(s) [${labels}] are currently in transit / moving and cannot be inspected`);
+    }
+
+    // Validation 3: Cannot inspect tools already in Repair
+    const repairTools = tools.filter(t => (t.status || '').toLowerCase() === 'repair');
+    if (repairTools.length > 0) {
+        const labels = repairTools.map(t => t.toolId || t._id).join(', ');
+        throw new Error(`Tool(s) [${labels}] are currently under Repair and cannot undergo inspection until repair is resolved`);
+    }
+
+    const userInfo = {
+        _id: user?._id || null,
+        name: user?.name || user?.username || 'Quality Inspector',
+        email: user?.email || 'quality@landt.com'
+    };
+
+    const targetToolIds = [];
+    const now = new Date();
+
+    if (result === 'Pass') {
+        const cleanValidation = validation.trim();
+        const yearsMatch = cleanValidation.match(/(\d+)/);
+        const years = yearsMatch ? parseInt(yearsMatch[1], 10) : 1;
+
+        for (const tool of tools) {
+            targetToolIds.push(tool.toolId || tool._id.toString());
+
+            // 1. Resolve start date (validationStartDate -> dateOfSupply -> createdAt -> now)
+            let startDate = parseFlexibleDateHelper(
+                tool.validationStartDate ||
+                (tool.customFields?.get ? tool.customFields.get('validationStartDate') : tool.customFields?.validationStartDate) ||
+                tool.dateOfSupply ||
+                (tool.customFields?.get ? tool.customFields.get('dateOfSupply') : tool.customFields?.dateOfSupply) ||
+                tool.createdAt ||
+                now
+            );
+            if (!startDate) startDate = now;
+
+            const computedExpiry = new Date(startDate);
+            computedExpiry.setFullYear(computedExpiry.getFullYear() + years);
+
+            tool.validityPeriod = cleanValidation;
+            if (!tool.customFields) tool.customFields = new Map();
+            if (tool.customFields.set) {
+                tool.customFields.set('validation', cleanValidation);
+                tool.customFields.set('validityPeriod', cleanValidation);
+            }
+
+            tool.lastInspectionDate = now;
+            tool.nextInspectionDueDate = computedExpiry;
+            tool.inspectionStatus = 'Pass';
+            tool.inspectionResult = 'Pass';
+            tool.inspectionAction = 'Pass';
+            tool.inspectedBy = userInfo;
+            tool.inspectedAt = now;
+            tool.status = 'Available';
+
+            if (!tool.inspectionHistory) tool.inspectionHistory = [];
+            tool.inspectionHistory.push({
+                result: 'Pass',
+                action: 'Pass',
+                validation: cleanValidation,
+                expiryDate: computedExpiry,
+                inspectedBy: userInfo,
+                inspectedAt: now,
+                notes: remarks.trim()
+            });
+
+            await tool.save();
+        }
+
+        const auditLog = new ToolAuditLog({
+            user: userInfo,
+            dateTime: now,
+            action: 'Tool Inspection - Pass',
+            store: tools[0]?.currentSite || tools[0]?.store,
+            affectedToolsCount: tools.length,
+            toolIds: targetToolIds,
+            remarks: `Inspection Pass for ${tools.length} tool(s). Validation set to ${cleanValidation}${remarks ? ` - Notes: ${remarks.trim()}` : ''}`
+        });
+        await auditLog.save();
+
+        return {
+            count: tools.length,
+            result: 'Pass',
+            action: 'Pass',
+            validation: cleanValidation,
+            message: `${tools.length} tool(s) marked as Inspection Pass with ${cleanValidation} validation period`
+        };
+    } else {
+        // Fail: Repair or Scrap
+        if (action === 'Repair') {
+            for (const tool of tools) {
+                targetToolIds.push(tool.toolId || tool._id.toString());
+                tool.status = 'Repair';
+                tool.inspectionStatus = 'Fail';
+                tool.inspectionResult = 'Fail';
+                tool.inspectionAction = 'Repair';
+                tool.lastInspectionDate = now;
+                tool.inspectedBy = userInfo;
+                tool.inspectedAt = now;
+
+                if (!tool.inspectionHistory) tool.inspectionHistory = [];
+                tool.inspectionHistory.push({
+                    result: 'Fail',
+                    action: 'Repair',
+                    validation: tool.validityPeriod,
+                    expiryDate: tool.nextInspectionDueDate,
+                    inspectedBy: userInfo,
+                    inspectedAt: now,
+                    notes: remarks.trim() || 'Defect detected - Sent to Repair'
+                });
+
+                await tool.save();
+            }
+
+            const auditLog = new ToolAuditLog({
+                user: userInfo,
+                dateTime: now,
+                action: 'Tool Inspection - Fail (Repair)',
+                store: tools[0]?.currentSite || tools[0]?.store,
+                affectedToolsCount: tools.length,
+                toolIds: targetToolIds,
+                remarks: remarks ? `Inspection Fail: Sent to Repair - ${remarks.trim()}` : `Inspection Fail: Sent to Repair`
+            });
+            await auditLog.save();
+
+            return {
+                count: tools.length,
+                result: 'Fail',
+                action: 'Repair',
+                message: `${tools.length} tool(s) marked as Fail and routed to Repair. Operations restricted.`
+            };
+        } else {
+            // action === 'Scrap'
+            for (const tool of tools) {
+                targetToolIds.push(tool.toolId || tool._id.toString());
+                tool.status = 'Scrapped';
+                tool.isScrapped = true;
+                tool.isDisposed = false;
+                tool.scrappedAt = now;
+                tool.scrappedBy = userInfo;
+                tool.scrapReason = remarks.trim() || 'Failed Inspection - Moved to Scrap';
+                tool.inspectionStatus = 'Fail';
+                tool.inspectionResult = 'Fail';
+                tool.inspectionAction = 'Scrap';
+                tool.lastInspectionDate = now;
+                tool.inspectedBy = userInfo;
+                tool.inspectedAt = now;
+
+                if (!tool.inspectionHistory) tool.inspectionHistory = [];
+                tool.inspectionHistory.push({
+                    result: 'Fail',
+                    action: 'Scrap',
+                    validation: tool.validityPeriod,
+                    expiryDate: tool.nextInspectionDueDate,
+                    inspectedBy: userInfo,
+                    inspectedAt: now,
+                    notes: remarks.trim() || 'Failed Inspection - Moved to Scrap'
+                });
+
+                await tool.save();
+            }
+
+            const auditLog = new ToolAuditLog({
+                user: userInfo,
+                dateTime: now,
+                action: 'Tool Inspection - Fail (Scrap)',
+                store: tools[0]?.currentSite || tools[0]?.store,
+                affectedToolsCount: tools.length,
+                toolIds: targetToolIds,
+                remarks: remarks ? `Inspection Fail: Moved to Scrap - ${remarks.trim()}` : `Inspection Fail: Moved to Scrap`
+            });
+            await auditLog.save();
+
+            return {
+                count: tools.length,
+                result: 'Fail',
+                action: 'Scrap',
+                message: `${tools.length} tool(s) marked as Fail and moved directly to Scrap page`
+            };
+        }
+    }
+};
+
 export const toolService = {
     getToolsByStoreId,
     createToolInStore,
@@ -1702,7 +1972,9 @@ export const toolService = {
     bulkEditTools,
     transferTools,
     syncToolIdReferences,
-    bulkScrapTools
+    bulkScrapTools,
+    inspectTools
 };
+
 
 

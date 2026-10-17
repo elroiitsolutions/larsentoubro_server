@@ -2,6 +2,12 @@ import * as challanService from '../services/challan.service.js';
 
 export const createDeliveryChallan = async (req, res, next) => {
     try {
+        if (req.user && req.user.role !== 'Admin' && req.user.hasInspectionAccess) {
+            return res.status(403).json({
+                success: false,
+                message: 'Access denied: Users with Inspection access cannot create delivery challans.'
+            });
+        }
         const challan = await challanService.createDeliveryChallan(req.body, req.user || {});
         res.status(201).json({ success: true, data: challan, message: 'Delivery Challan created successfully' });
     } catch (error) {
@@ -11,6 +17,12 @@ export const createDeliveryChallan = async (req, res, next) => {
 
 export const createScrapDeliveryChallan = async (req, res, next) => {
     try {
+        if (req.user && req.user.role !== 'Admin' && req.user.hasInspectionAccess) {
+            return res.status(403).json({
+                success: false,
+                message: 'Access denied: Users with Inspection access cannot create scrap delivery challans.'
+            });
+        }
         const challan = await challanService.createScrapDeliveryChallan(req.body, req.user || {});
         res.status(201).json({ success: true, data: challan, message: 'Scrap Delivery Challan created successfully' });
     } catch (error) {

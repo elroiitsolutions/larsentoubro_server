@@ -127,6 +127,59 @@ const seedDefaultForms = async () => {
       ]
     });
   }
+
+  let toolForm = await FormDefinition.findOne({ slug: 'tool-form' });
+  if (!toolForm) {
+    await FormDefinition.create({
+      name: 'Tool & Inspection Form',
+      slug: 'tool-form',
+      description: 'Configure customizable tool fields, dynamic validation periods (1 Year, 2 Years, 3 Years), and inspection options.',
+      isActive: true,
+      fields: [
+        { id: 'description', name: 'description', label: 'Tool Description', type: 'text', placeholder: 'e.g. Tirfor 3.2 Ton', validations: [{ type: 'required', message: 'Description is required' }], order: 0 },
+        {
+          id: 'validation',
+          name: 'validation',
+          label: 'Validation Period',
+          type: 'select',
+          options: [
+            { label: '1 Year', value: '1 Year' },
+            { label: '2 Years', value: '2 Years' },
+            { label: '3 Years', value: '3 Years' }
+          ],
+          validations: [{ type: 'required', message: 'Validation period is required' }],
+          order: 1
+        },
+        { id: 'dateOfSupply', name: 'dateOfSupply', label: 'Date of Supply', type: 'date', order: 2 },
+        { id: 'remarks', name: 'remarks', label: 'Remarks / Notes', type: 'textarea', placeholder: 'Inspection remarks', order: 3 }
+      ]
+    });
+  } else {
+    let valField = toolForm.fields.find(f => f.name === 'validation' || f.id === 'validation');
+    if (!valField) {
+      toolForm.fields.push({
+        id: 'validation',
+        name: 'validation',
+        label: 'Validation Period',
+        type: 'select',
+        options: [
+          { label: '1 Year', value: '1 Year' },
+          { label: '2 Years', value: '2 Years' },
+          { label: '3 Years', value: '3 Years' }
+        ],
+        validations: [{ type: 'required', message: 'Validation period is required' }],
+        order: toolForm.fields.length
+      });
+      await toolForm.save();
+    } else if (!valField.options || valField.options.length === 0) {
+      valField.options = [
+        { label: '1 Year', value: '1 Year' },
+        { label: '2 Years', value: '2 Years' },
+        { label: '3 Years', value: '3 Years' }
+      ];
+      await toolForm.save();
+    }
+  }
 };
 
 export const getForms = async (req, res, next) => {
@@ -142,6 +195,7 @@ export const getForms = async (req, res, next) => {
 export const getFormBySlug = async (req, res, next) => {
   try {
     const { slug } = req.params;
+    await seedDefaultForms().catch(err => console.error("Error seeding default forms:", err));
     const form = await FormDefinition.findOne({ slug, isActive: true });
     
     if (!form) {

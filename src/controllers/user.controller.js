@@ -1,10 +1,13 @@
 import { userService } from '../services/user.service.js';
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env.js';
+import { User } from '../models/user.model.js';
 import { LoginRequest } from '../models/loginRequest.model.js';
+import { LoginLog } from '../models/loginLog.model.js';
 import { AuditLog } from '../models/auditLog.model.js';
 import { realtimeService } from '../services/socket.service.js';
 import { Vendor } from '../models/vendor.model.js';
+import { parseUserAgent } from '../utils/deviceInfo.js';
 
 const generateUserToken = (user) => {
     return jwt.sign(
@@ -41,7 +44,7 @@ const createUser = async (req, res, next) => {
 
 const getUsers = async (req, res, next) => {
     try {
-        const users = await userService.getUsers();
+        const users = await userService.getUsers(req.user);
         res.status(200).json({ success: true, data: users });
     } catch (error) {
         next(error);
@@ -50,36 +53,145 @@ const getUsers = async (req, res, next) => {
 
 const getUserById = async (req, res, next) => {
     try {
-        const user = await userService.getUserById(req.params.id);
+        const user = await userService.getUserById(req.params.id, req.user);
         if (!user) {
             return res.status(404).json({ success: false, message: 'User not found' });
         }
         res.status(200).json({ success: true, data: user });
     } catch (error) {
+        if (error.message && error.message.includes('Access denied')) {
+            return res.status(403).json({ success: false, message: error.message });
+        }
         next(error);
     }
 };
 
 const updateUser = async (req, res, next) => {
     try {
-        const user = await userService.updateUser(req.params.id, req.body);
+        const user = await userService.updateUser(req.params.id, req.body, req.user);
         if (!user) {
             return res.status(404).json({ success: false, message: 'User not found' });
         }
+        await AuditLog.create({
+            actor: req.user._id,
+            action: 'UPDATE_USER',
+            targetUser: user._id,
+            details: { name: user.name, role: user.role }
+        });
         res.status(200).json({ success: true, data: user });
     } catch (error) {
+        if (error.message && error.message.includes('Access denied')) {
+            return res.status(403).json({ success: false, message: error.message });
+        }
         next(error);
     }
 };
 
 const deleteUser = async (req, res, next) => {
     try {
-        const user = await userService.deleteUser(req.params.id);
+        const user = await userService.deleteUser(req.params.id, req.user);
         if (!user) {
             return res.status(404).json({ success: false, message: 'User not found' });
         }
+        await AuditLog.create({
+            actor: req.user._id,
+            action: 'DELETE_USER',
+            targetUser: req.params.id,
+            details: { name: user.name }
+        });
         res.status(200).json({ success: true, data: {} });
     } catch (error) {
+        if (error.message && error.message.includes('Access denied')) {
+            return res.status(403).json({ success: false, message: error.message });
+        }
+        next(error);
+    }
+};
+
+// Subuser Endpoints
+const getSubusers = async (req, res, next) => {
+    try {
+        if (req.user.role !== 'Admin' && !req.user.canCreateUser) {
+            return res.status(403).json({ success: false, message: 'Access denied. You do not have permission to manage subusers.' });
+        }
+        const subusers = await userService.getSubusers(req.user);
+        res.status(200).json({ success: true, data: subusers });
+    } catch (error) {
+        next(error);
+    }
+};
+
+const createSubuser = async (req, res, next) => {
+    try {
+        if (req.user.role !== 'Admin' && !req.user.canCreateUser) {
+            return res.status(403).json({ success: false, message: 'Access denied. You do not have permission to create subusers.' });
+        }
+        const existingEmail = await userService.getUserByEmail(req.body.email);
+        if (existingEmail) {
+            return res.status(400).json({ success: false, message: 'Email already registered' });
+        }
+
+        const subuser = await userService.createSubuser(req.body, req.user);
+        await AuditLog.create({
+            actor: req.user._id,
+            action: 'CREATE_SUBUSER',
+            targetUser: subuser._id,
+            details: { name: subuser.name, email: subuser.email, parentUser: subuser.parentUser }
+        });
+
+        res.status(201).json({ success: true, data: subuser });
+    } catch (error) {
+        if (error.message && error.message.includes('Access denied')) {
+            return res.status(403).json({ success: false, message: error.message });
+        }
+        next(error);
+    }
+};
+
+const updateSubuser = async (req, res, next) => {
+    try {
+        if (req.user.role !== 'Admin' && !req.user.canCreateUser) {
+            return res.status(403).json({ success: false, message: 'Access denied. You do not have permission to edit subusers.' });
+        }
+        const subuser = await userService.updateUser(req.params.id, req.body, req.user);
+        if (!subuser) {
+            return res.status(404).json({ success: false, message: 'Subuser not found' });
+        }
+        await AuditLog.create({
+            actor: req.user._id,
+            action: 'UPDATE_SUBUSER_PERMISSIONS',
+            targetUser: subuser._id,
+            details: { allowedPages: subuser.allowedPages, hasInspectionAccess: subuser.hasInspectionAccess }
+        });
+        res.status(200).json({ success: true, data: subuser });
+    } catch (error) {
+        if (error.message && error.message.includes('Access denied')) {
+            return res.status(403).json({ success: false, message: error.message });
+        }
+        next(error);
+    }
+};
+
+const deleteSubuser = async (req, res, next) => {
+    try {
+        if (req.user.role !== 'Admin' && !req.user.canCreateUser) {
+            return res.status(403).json({ success: false, message: 'Access denied. You do not have permission to delete subusers.' });
+        }
+        const user = await userService.deleteUser(req.params.id, req.user);
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'Subuser not found' });
+        }
+        await AuditLog.create({
+            actor: req.user._id,
+            action: 'DELETE_SUBUSER',
+            targetUser: req.params.id,
+            details: { name: user.name, email: user.email }
+        });
+        res.status(200).json({ success: true, data: {} });
+    } catch (error) {
+        if (error.message && error.message.includes('Access denied')) {
+            return res.status(403).json({ success: false, message: error.message });
+        }
         next(error);
     }
 };
@@ -139,13 +251,16 @@ const getCurrentUser = async (req, res, next) => {
     }
 };
 
-// User & Vendor Login Flow
+// User, Subuser & Vendor Login Flow
 const loginUser = async (req, res, next) => {
     try {
         const { email, password } = req.body;
         const normalizedEmail = (email || '').trim().toLowerCase();
+        const clientIp = req.ip || req.socket.remoteAddress || '';
+        const userAgentHeader = req.headers['user-agent'] || '';
+        const deviceInfo = parseUserAgent(userAgentHeader);
 
-        // 1. First check User collection for internal team members
+        // 1. First check User collection for internal team members and subusers
         const user = await userService.getUserByEmail(normalizedEmail);
         if (!user) {
             // 2. Fallback check Vendor collection for Vendor logins
@@ -158,10 +273,32 @@ const loginUser = async (req, res, next) => {
 
             if (vendor) {
                 if (vendor.status === 'Inactive') {
+                    await LoginLog.create({
+                        user: vendor._id,
+                        userName: vendor.name,
+                        userEmail: vendor.contactEmail,
+                        role: 'Vendor',
+                        status: 'Failed',
+                        rejectionReason: 'Vendor account inactive',
+                        ipAddress: clientIp,
+                        userAgent: userAgentHeader,
+                        deviceInfo
+                    });
                     return res.status(403).json({ success: false, message: 'Vendor account is inactive. Please contact administrator.' });
                 }
                 const isVendorMatch = await vendor.comparePassword(password);
                 if (!isVendorMatch) {
+                    await LoginLog.create({
+                        user: vendor._id,
+                        userName: vendor.name,
+                        userEmail: vendor.contactEmail,
+                        role: 'Vendor',
+                        status: 'Failed',
+                        rejectionReason: 'Invalid password',
+                        ipAddress: clientIp,
+                        userAgent: userAgentHeader,
+                        deviceInfo
+                    });
                     return res.status(401).json({ success: false, message: 'Invalid email or password' });
                 }
 
@@ -184,6 +321,17 @@ const loginUser = async (req, res, next) => {
                     allowedPages: ['/projects', '/stores', '/tools']
                 };
 
+                await LoginLog.create({
+                    user: vendor._id,
+                    userName: vendor.name,
+                    userEmail: vendor.contactEmail,
+                    role: 'Vendor',
+                    status: 'Success',
+                    ipAddress: clientIp,
+                    userAgent: userAgentHeader,
+                    deviceInfo
+                });
+
                 return res.status(200).json({
                     success: true,
                     token,
@@ -191,11 +339,35 @@ const loginUser = async (req, res, next) => {
                 });
             }
 
+            // Unknown account attempt
+            await LoginLog.create({
+                userName: normalizedEmail,
+                userEmail: normalizedEmail,
+                role: 'Unknown',
+                status: 'Failed',
+                rejectionReason: 'User not found',
+                ipAddress: clientIp,
+                userAgent: userAgentHeader,
+                deviceInfo
+            });
+
             return res.status(401).json({ success: false, message: 'Invalid email or password' });
         }
 
         const isMatch = await user.comparePassword(password);
         if (!isMatch) {
+            await LoginLog.create({
+                user: user._id,
+                userName: user.name,
+                userEmail: user.email,
+                role: user.role || 'User',
+                parentUser: user.parentUser || null,
+                status: 'Failed',
+                rejectionReason: 'Invalid password',
+                ipAddress: clientIp,
+                userAgent: userAgentHeader,
+                deviceInfo
+            });
             return res.status(401).json({ success: false, message: 'Invalid email or password' });
         }
 
@@ -205,6 +377,17 @@ const loginUser = async (req, res, next) => {
             const userObj = user.toObject();
             delete userObj.password;
 
+            await LoginLog.create({
+                user: user._id,
+                userName: user.name,
+                userEmail: user.email,
+                role: 'Admin',
+                status: 'Success',
+                ipAddress: clientIp,
+                userAgent: userAgentHeader,
+                deviceInfo
+            });
+
             return res.status(200).json({
                 success: true,
                 token,
@@ -212,7 +395,7 @@ const loginUser = async (req, res, next) => {
             });
         }
 
-        // 1. Check if active PENDING request exists within last 10 minutes
+        // Check if active PENDING request exists within last 10 minutes
         const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
         const existingPending = await LoginRequest.findOne({
             user: user._id,
@@ -223,7 +406,9 @@ const loginUser = async (req, res, next) => {
         if (existingPending) {
             return res.status(409).json({
                 success: false,
-                message: 'Login request sent. Waiting for administrator approval.',
+                message: user.role === 'Subuser'
+                    ? 'Login request sent. Waiting for parent user approval.'
+                    : 'Login request sent. Waiting for administrator approval.',
                 requestId: String(existingPending._id),
                 data: {
                     requestId: String(existingPending._id),
@@ -234,14 +419,37 @@ const loginUser = async (req, res, next) => {
             });
         }
 
-        // 2. Create new PENDING LoginRequest
+        // Parent User Resolution for Subuser
+        let parentUserName = null;
+        if (user.role === 'Subuser' && user.parentUser) {
+            const parent = await User.findById(user.parentUser);
+            parentUserName = parent?.name || null;
+        }
+
+        // Create new PENDING LoginRequest
         const loginReq = await LoginRequest.create({
             user: user._id,
             userName: user.name,
             userEmail: user.email,
+            parentUser: user.parentUser || null,
             status: 'PENDING',
-            ipAddress: req.ip || req.socket.remoteAddress || '',
-            userAgent: req.headers['user-agent'] || ''
+            ipAddress: clientIp,
+            userAgent: userAgentHeader
+        });
+
+        // Record in LoginLog
+        await LoginLog.create({
+            user: user._id,
+            userName: user.name,
+            userEmail: user.email,
+            role: user.role || 'User',
+            parentUser: user.parentUser || null,
+            parentUserName,
+            status: 'Pending Approval',
+            ipAddress: clientIp,
+            userAgent: userAgentHeader,
+            deviceInfo,
+            requestId: String(loginReq._id)
         });
 
         const requestPayload = {
@@ -249,16 +457,24 @@ const loginUser = async (req, res, next) => {
             user_id: user._id,
             user_name: user.name,
             user_email: user.email,
+            role: user.role || 'User',
+            parent_id: user.parentUser ? String(user.parentUser) : null,
+            parent_name: parentUserName,
             status: 'PENDING',
             requested_at: loginReq.requestedAt
         };
 
-        // Notify Admins in real-time
+        // Notify Parent User if Subuser; also notify Admins
+        if (user.role === 'Subuser' && user.parentUser) {
+            realtimeService.notifyUser(String(user.parentUser), 'new_login_request', requestPayload);
+        }
         realtimeService.notifyAdmins('new_login_request', requestPayload);
 
         res.status(202).json({
             success: true,
-            message: 'Login request sent. Waiting for administrator approval.',
+            message: user.role === 'Subuser'
+                ? 'Login request sent. Waiting for parent user approval.'
+                : 'Login request sent. Waiting for administrator approval.',
             requestId: String(loginReq._id),
             data: {
                 requestId: String(loginReq._id),
@@ -305,18 +521,28 @@ const checkLoginRequestStatus = async (req, res, next) => {
     }
 };
 
-// Admin: Get All Pending Login Requests
+// Get Pending Login Requests (Admin sees all; Parent User sees their subusers)
 const getPendingLoginRequests = async (req, res, next) => {
     try {
-        const pending = await LoginRequest.find({ status: 'PENDING' })
+        const filter = { status: 'PENDING' };
+        if (req.user.role !== 'Admin') {
+            // Parent users can only see pending requests for their subusers
+            filter.parentUser = req.user._id;
+        }
+
+        const pending = await LoginRequest.find(filter)
             .sort({ requestedAt: -1 })
-            .populate('user', 'name email role');
+            .populate('user', 'name email role parentUser')
+            .populate('parentUser', 'name email');
 
         const formatted = pending.map(r => ({
             id: String(r._id),
             user_id: r.user?._id || r.user,
             user_name: r.userName,
             user_email: r.userEmail,
+            role: r.user?.role || 'User',
+            parent_id: r.parentUser?._id || r.parentUser,
+            parent_name: r.parentUser?.name || null,
             status: r.status,
             requested_at: r.requestedAt,
             ip_address: r.ipAddress
@@ -328,7 +554,7 @@ const getPendingLoginRequests = async (req, res, next) => {
     }
 };
 
-// Admin: Approve Login Request
+// Approve Login Request (Admin or Parent User)
 const approveLoginRequest = async (req, res, next) => {
     try {
         const { requestId } = req.params;
@@ -338,17 +564,35 @@ const approveLoginRequest = async (req, res, next) => {
             return res.status(400).json({ success: false, message: 'Pending login request not found' });
         }
 
+        // Authorization check: Admin OR parent user of this subuser
+        const isParent = loginReq.parentUser && String(loginReq.parentUser) === String(req.user._id);
+        if (req.user.role !== 'Admin' && !isParent) {
+            return res.status(403).json({ success: false, message: 'Access denied. You can only approve login requests for your own subusers.' });
+        }
+
         loginReq.status = 'APPROVED';
         loginReq.approvedAt = new Date();
         loginReq.approvedBy = req.user._id;
         await loginReq.save();
+
+        // Update persistent LoginLog
+        await LoginLog.findOneAndUpdate(
+            { requestId: String(loginReq._id) },
+            {
+                status: 'Approved',
+                approvedBy: req.user._id,
+                approverName: req.user.name,
+                approvedAt: new Date()
+            }
+        );
 
         // Audit Log
         await AuditLog.create({
             actor: req.user._id,
             action: 'APPROVE_LOGIN',
             targetRequestId: String(loginReq._id),
-            targetUser: loginReq.user._id
+            targetUser: loginReq.user._id,
+            details: { approvedByRole: req.user.role, isParentApproval: Boolean(isParent) }
         });
 
         // Issue JWT token
@@ -371,7 +615,7 @@ const approveLoginRequest = async (req, res, next) => {
     }
 };
 
-// Admin: Reject Login Request
+// Reject Login Request (Admin or Parent User)
 const rejectLoginRequest = async (req, res, next) => {
     try {
         const { requestId } = req.params;
@@ -382,11 +626,29 @@ const rejectLoginRequest = async (req, res, next) => {
             return res.status(400).json({ success: false, message: 'Pending login request not found' });
         }
 
+        // Authorization check: Admin OR parent user of this subuser
+        const isParent = loginReq.parentUser && String(loginReq.parentUser) === String(req.user._id);
+        if (req.user.role !== 'Admin' && !isParent) {
+            return res.status(403).json({ success: false, message: 'Access denied. You can only reject login requests for your own subusers.' });
+        }
+
         loginReq.status = 'REJECTED';
         loginReq.approvedAt = new Date();
         loginReq.approvedBy = req.user._id;
-        loginReq.rejectionReason = reason || 'Rejected by administrator';
+        loginReq.rejectionReason = reason || (isParent ? 'Rejected by parent user' : 'Rejected by administrator');
         await loginReq.save();
+
+        // Update persistent LoginLog
+        await LoginLog.findOneAndUpdate(
+            { requestId: String(loginReq._id) },
+            {
+                status: 'Rejected',
+                approvedBy: req.user._id,
+                approverName: req.user.name,
+                approvedAt: new Date(),
+                rejectionReason: loginReq.rejectionReason
+            }
+        );
 
         // Audit Log
         await AuditLog.create({
@@ -394,7 +656,7 @@ const rejectLoginRequest = async (req, res, next) => {
             action: 'REJECT_LOGIN',
             targetRequestId: String(loginReq._id),
             targetUser: loginReq.user,
-            details: { reason: loginReq.rejectionReason }
+            details: { reason: loginReq.rejectionReason, rejectedByRole: req.user.role, isParentRejection: Boolean(isParent) }
         });
 
         // Notify user via Socket/SSE
@@ -404,6 +666,29 @@ const rejectLoginRequest = async (req, res, next) => {
         });
 
         res.status(200).json({ success: true, message: 'Login request rejected' });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// User Logout (tracks session duration)
+const logoutUser = async (req, res, next) => {
+    try {
+        if (req.user && req.user._id) {
+            const latestLog = await LoginLog.findOne({
+                user: req.user._id,
+                status: { $in: ['Success', 'Approved'] },
+                logoutAt: null
+            }).sort({ loginAt: -1 });
+
+            if (latestLog) {
+                const now = new Date();
+                latestLog.logoutAt = now;
+                latestLog.sessionDuration = Math.max(0, Math.round((now.getTime() - new Date(latestLog.loginAt).getTime()) / 1000));
+                await latestLog.save();
+            }
+        }
+        res.status(200).json({ success: true, message: 'Logged out successfully' });
     } catch (error) {
         next(error);
     }
@@ -450,6 +735,17 @@ const guestLogin = async (req, res, next) => {
 
         const token = generateUserToken(guestUserPayload);
 
+        // Record guest login
+        await LoginLog.create({
+            userName: 'Guest User',
+            userEmail: 'guest@lnt.com',
+            role: 'Guest',
+            status: 'Success',
+            ipAddress: req.ip || '',
+            userAgent: req.headers['user-agent'] || '',
+            deviceInfo: parseUserAgent(req.headers['user-agent'])
+        });
+
         return res.status(200).json({
             success: true,
             token,
@@ -462,12 +758,17 @@ const guestLogin = async (req, res, next) => {
 
 export const userController = {
     createUser,
+    createSubuser,
     getUsers,
+    getSubusers,
     getUserById,
     updateUser,
+    updateSubuser,
     deleteUser,
+    deleteSubuser,
     getCurrentUser,
     loginUser,
+    logoutUser,
     guestLogin,
     checkLoginRequestStatus,
     getPendingLoginRequests,

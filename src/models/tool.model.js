@@ -34,6 +34,27 @@ const toolSchema = new mongoose.Schema({
     lastInspectionDate: { type: Date },
     nextInspectionDueDate: { type: Date },
     inspectionStatus: { type: String, default: 'Pending' },
+    inspectionResult: { type: String, enum: ['Pass', 'Fail', 'Pending', null], default: null },
+    inspectionAction: { type: String, enum: ['Pass', 'Repair', 'Scrap', null], default: null },
+    inspectedBy: {
+        _id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        name: { type: String },
+        email: { type: String }
+    },
+    inspectedAt: { type: Date, default: null },
+    inspectionHistory: [{
+        result: { type: String, enum: ['Pass', 'Fail'] },
+        action: { type: String, enum: ['Pass', 'Repair', 'Scrap'] },
+        validation: { type: String },
+        expiryDate: { type: Date },
+        inspectedBy: {
+            _id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+            name: { type: String },
+            email: { type: String }
+        },
+        inspectedAt: { type: Date, default: Date.now },
+        notes: { type: String }
+    }],
     lifeExtensionYears: { type: Number, default: 0 },
     extensionApprovedBy: { type: String },
     extensionApprovedAt: { type: Date },

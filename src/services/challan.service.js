@@ -407,6 +407,11 @@ export const createDeliveryChallan = async (data, user = {}) => {
         throw new Error(`Cannot create Delivery Challan: Tool(s) ${invalidMissing.map(t => t.toolId).join(', ')} are marked as Missing`);
     }
 
+    const invalidRepair = toolsToCheck.filter(t => (t.status || '').toLowerCase() === 'repair');
+    if (invalidRepair.length > 0) {
+        throw new Error(`Cannot create Delivery Challan: Tool(s) ${invalidRepair.map(t => t.toolId || t.description).join(', ')} are currently under Repair and cannot be issued in a Delivery Challan.`);
+    }
+
     const targetVendorId = vendorId || (sourceDc && sourceDc.vendor?._id);
     let vendorDoc = null;
     if (targetVendorId) {
@@ -654,6 +659,12 @@ export const createScrapDeliveryChallan = async (data, user = {}) => {
         throw new Error(`Cannot create Scrap Delivery Challan: Tool(s) [${disposedLabels}] have already been disposed via a Delivery Challan.`);
     }
 
+    const repairTools = toolsToCheck.filter(t => t.status === 'Repair');
+    if (repairTools.length > 0) {
+        const repairLabels = repairTools.map(t => t.toolId || t.toolCode || t._id.toString()).join(', ');
+        throw new Error(`Cannot create Scrap Delivery Challan: Tool(s) [${repairLabels}] are currently under Repair and cannot be disposed.`);
+    }
+
     return await runInTransaction(async (session) => {
         const challanNumber = await generateChallanNumber('Scrap', session);
 
@@ -842,6 +853,15 @@ export const createReturnChallan = async (data, user = {}) => {
         );
         if (matchingDcItem && (matchingDcItem.returnStatus === 'Returned' || matchingDcItem.returnStatus === 'Missing')) {
             throw new Error(`Tool ${item.toolId || 'item'} has already been returned or marked missing against Delivery Challan ${referenceDc.challanNumber}`);
+        }
+    }
+
+    const returnToolIds = items.map(i => i.tool).filter(Boolean);
+    if (returnToolIds.length > 0) {
+        const toolsUnderRepair = await Tool.find({ _id: { $in: returnToolIds }, status: 'Repair' });
+        if (toolsUnderRepair.length > 0) {
+            const repairNames = toolsUnderRepair.map(t => t.toolId || t.toolCode || t._id).join(', ');
+            throw new Error(`The following tool(s) are currently under Repair and cannot be processed in a Return Challan: ${repairNames}`);
         }
     }
 

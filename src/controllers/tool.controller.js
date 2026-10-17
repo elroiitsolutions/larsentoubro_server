@@ -275,6 +275,12 @@ export const bulkScrapTools = async (req, res, next) => {
         if (req.user && req.user.role === 'Vendor') {
             return res.status(403).json({ success: false, message: 'Access denied. Vendors cannot scrap tools.' });
         }
+        if (req.user && req.user.role !== 'Admin' && req.user.hasInspectionAccess) {
+            return res.status(403).json({
+                success: false,
+                message: 'Access denied: Users with Inspection access cannot scrap tools directly. Please use the Inspection workflow.'
+            });
+        }
         const { toolIds, reason } = req.body;
         if (!Array.isArray(toolIds) || toolIds.length === 0) {
             return res.status(400).json({ success: false, message: 'Specific tool IDs must be selected to scrap' });
@@ -295,6 +301,12 @@ export const markToolsAsPrinted = async (req, res, next) => {
         if (req.user && req.user.role === 'Vendor') {
             return res.status(403).json({ success: false, message: 'Access denied. Vendors cannot modify print status.' });
         }
+        if (req.user && req.user.role !== 'Admin' && req.user.hasInspectionAccess) {
+            return res.status(403).json({
+                success: false,
+                message: 'Access denied: Users with Inspection access cannot mark tools as printed.'
+            });
+        }
         const { toolIds } = req.body;
         const result = await toolService.markToolsAsPrinted({
             toolIds,
@@ -310,6 +322,12 @@ export const unmarkToolsAsPrinted = async (req, res, next) => {
     try {
         if (req.user && req.user.role === 'Vendor') {
             return res.status(403).json({ success: false, message: 'Access denied. Vendors cannot modify print status.' });
+        }
+        if (req.user && req.user.role !== 'Admin' && req.user.hasInspectionAccess) {
+            return res.status(403).json({
+                success: false,
+                message: 'Access denied: Users with Inspection access cannot unmark tools as printed.'
+            });
         }
         const { toolIds } = req.body;
         const result = await toolService.unmarkToolsAsPrinted({
@@ -452,6 +470,12 @@ export const transferTools = async (req, res, next) => {
     try {
         if (req.user && req.user.role === 'Vendor') {
             return res.status(403).json({ success: false, message: 'Access denied. Vendors cannot transfer store tools.' });
+        }
+        if (req.user && req.user.role !== 'Admin' && req.user.hasInspectionAccess) {
+            return res.status(403).json({
+                success: false,
+                message: 'Access denied: Users with Inspection access cannot transfer tools.'
+            });
         }
         const { sourceStoreId, destinationStoreId, toolIds, remarks } = req.body;
         const sourceId = req.params.storeId || sourceStoreId;
@@ -659,4 +683,26 @@ export const computeToolValidityAndStatus = (tool) => {
         };
     }
 };
+
+export const inspectTools = async (req, res, next) => {
+    try {
+        const { toolIds, result, action, validation, remarks } = req.body;
+        const inspectRes = await toolService.inspectTools({
+            toolIds,
+            result,
+            action,
+            validation,
+            remarks,
+            user: req.user
+        });
+        res.status(200).json({
+            success: true,
+            message: inspectRes.message,
+            data: inspectRes
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
 
