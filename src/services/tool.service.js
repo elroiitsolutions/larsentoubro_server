@@ -6,6 +6,39 @@ import ToolAuditLog from '../models/toolAuditLog.model.js';
 import ToolIdGenerator from '../utils/tool-id.js';
 import * as XLSX from 'xlsx';
 
+const buildTokenCondition = (tok) => {
+    const cleanTok = String(tok || '').trim();
+    if (!cleanTok) return [];
+    const escaped = cleanTok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const isNumeric = /^\d+$/.test(cleanTok);
+
+    const conds = [];
+
+    // Exact match on toolId (case-insensitive)
+    conds.push({ toolId: { $regex: `^${escaped}$`, $options: 'i' } });
+
+    if (isNumeric) {
+        const num = parseInt(cleanTok, 10);
+        if (!isNaN(num)) {
+            conds.push({ serialNumber: num });
+        }
+        // Suffix match on toolId (e.g. "0001" matches "SSSSOP0050825UE0001", "2759" matches "DSS01010T0526TPI2759")
+        conds.push({ toolId: { $regex: `${escaped}$`, $options: 'i' } });
+        // Exact match only for numeric toolCode (e.g. SAP material number "347470283")
+        conds.push({ toolCode: { $regex: `^${escaped}$`, $options: 'i' } });
+    } else {
+        // Alphanumeric code or text description
+        conds.push({ toolId: { $regex: `${escaped}$`, $options: 'i' } });
+        conds.push({ toolId: { $regex: escaped, $options: 'i' } });
+        conds.push({ toolCode: { $regex: `^${escaped}$`, $options: 'i' } });
+        conds.push({ toolCode: { $regex: `^${escaped}`, $options: 'i' } });
+        conds.push({ description: { $regex: escaped, $options: 'i' } });
+        conds.push({ toolType: { $regex: escaped, $options: 'i' } });
+    }
+
+    return conds;
+};
+
 const applyAdvancedFilters = (query, params) => {
     if (params.search && String(params.search).trim()) {
         if (!query.$and) query.$and = [];
@@ -13,13 +46,10 @@ const applyAdvancedFilters = (query, params) => {
 
         let tokens = [];
         if (rawSearch.includes(',') || rawSearch.includes('\n') || rawSearch.includes('|') || rawSearch.includes(';') || rawSearch.includes('\t')) {
-            const rawTokens = rawSearch.split(/[\n,|\t;]+/).map(t => t.trim()).filter(Boolean);
-            for (const rt of rawTokens) {
-                tokens.push(...rt.split(/\s+/).map(s => s.trim()).filter(Boolean));
-            }
+            tokens = rawSearch.split(/[\n,|\t;]+/).map(t => t.trim()).filter(Boolean);
         } else {
-            const spaceTokens = rawSearch.split(/[\s|\t;]+/).map(s => s.trim()).filter(Boolean);
-            const looksLikeMultipleCodes = spaceTokens.length > 1 && spaceTokens.every(t => /^[A-Za-z0-9_-]+$/.test(t) && (/\d/.test(t) || t.length >= 6));
+            const spaceTokens = rawSearch.split(/\s+/).map(s => s.trim()).filter(Boolean);
+            const looksLikeMultipleCodes = spaceTokens.length > 1 && spaceTokens.every(t => /^[A-Za-z0-9_-]+$/.test(t) && (/\d/.test(t) || t.length >= 4));
             if (looksLikeMultipleCodes) {
                 tokens = spaceTokens;
             } else {
@@ -37,27 +67,12 @@ const applyAdvancedFilters = (query, params) => {
             }
         }
 
-        if (uniqueTokens.length === 1) {
-            const escapedSearch = uniqueTokens[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            query.$and.push({
-                $or: [
-                    { description: { $regex: escapedSearch, $options: 'i' } },
-                    { toolId: { $regex: escapedSearch, $options: 'i' } },
-                    { toolCode: { $regex: escapedSearch, $options: 'i' } }
-                ]
-            });
-        } else if (uniqueTokens.length > 1) {
-            const tokenOrConditions = [];
-            for (const tok of uniqueTokens) {
-                const escaped = tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                tokenOrConditions.push(
-                    { toolId: { $regex: `^${escaped}$`, $options: 'i' } },
-                    { toolCode: { $regex: `^${escaped}$`, $options: 'i' } },
-                    { toolId: { $regex: escaped, $options: 'i' } },
-                    { toolCode: { $regex: escaped, $options: 'i' } },
-                    { description: { $regex: escaped, $options: 'i' } }
-                );
-            }
+        const tokenOrConditions = [];
+        for (const tok of uniqueTokens) {
+            tokenOrConditions.push(...buildTokenCondition(tok));
+        }
+
+        if (tokenOrConditions.length > 0) {
             query.$and.push({ $or: tokenOrConditions });
         }
     }
@@ -323,17 +338,25 @@ const getToolsByStoreId = async (storeId, params = {}) => {
         isScrapped: { $ne: true }
     };
 
-    if (params.assignedToolIds && Array.isArray(params.assignedToolIds)) {
-        query._id = { $in: params.assignedToolIds };
+    if (params.assignedToolIds) {
+        const assignedIds = Array.isArray(params.assignedToolIds)
+            ? params.assignedToolIds
+            : String(params.assignedToolIds).split(',').map(s => s.trim()).filter(Boolean);
+        if (assignedIds.length > 0) {
+            query._id = { $in: assignedIds };
+        }
     }
 
     applyAdvancedFilters(query, params);
 
-    // Self-healing reconciliation: Reconcile returned tool statuses from completed Return Challans
+    // Self-healing reconciliation: Reconcile returned and orphaned tool statuses
     try {
-        const { reconcileReturnedToolStatuses } = await import('./challan.service.js');
+        const { reconcileReturnedToolStatuses, reconcileOrphanedMovingToolStatuses } = await import('./challan.service.js');
         if (typeof reconcileReturnedToolStatuses === 'function') {
             await reconcileReturnedToolStatuses();
+        }
+        if (typeof reconcileOrphanedMovingToolStatuses === 'function') {
+            await reconcileOrphanedMovingToolStatuses();
         }
     } catch (e) {
         // Silently continue
@@ -361,21 +384,78 @@ const getToolsByStoreId = async (storeId, params = {}) => {
         sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
     }
 
+    // Fast lean response for multi-page Select All across filters
+    if (params.onlyIds === 'true' || params.onlyIds === true || params.allIds === 'true' || params.allIds === true) {
+        const leanTools = await Tool.find(query)
+            .select('_id toolId toolCode description name status isPrinted category toolType serialNumber validityPeriod validation')
+            .sort(sort)
+            .lean();
+        return {
+            ids: leanTools.map(t => t._id.toString()),
+            data: leanTools,
+            total: leanTools.length
+        };
+    }
+
+    const storeObjId = mongoose.Types.ObjectId.isValid(storeId) ? new mongoose.Types.ObjectId(storeId) : storeId;
+    const storeMatchFilter = {
+        $or: [
+            { currentSite: storeObjId },
+            { store: storeObjId },
+            { currentSite: storeId },
+            { store: storeId }
+        ],
+        isDeleted: { $ne: true },
+        isScrapped: { $ne: true }
+    };
+    if (params.assignedToolIds) {
+        const assignedIds = Array.isArray(params.assignedToolIds)
+            ? params.assignedToolIds
+            : String(params.assignedToolIds).split(',').map(s => s.trim()).filter(Boolean);
+        if (assignedIds.length > 0) {
+            storeMatchFilter._id = { $in: assignedIds.map(id => mongoose.Types.ObjectId.isValid(id) ? new mongoose.Types.ObjectId(id) : id) };
+        }
+    }
+
     const skip = (page - 1) * limit;
 
-    const [data, total] = await Promise.all([
+    const [data, total, statusAgg] = await Promise.all([
         Tool.find(query)
             .populate('project', 'name projectCode')
             .populate('currentSite', 'name location')
             .sort(sort)
             .skip(skip)
             .limit(parseInt(limit)),
-        Tool.countDocuments(query)
+        Tool.countDocuments(query),
+        Tool.aggregate([
+            { $match: storeMatchFilter },
+            {
+                $group: {
+                    _id: null,
+                    all: { $sum: 1 },
+                    available: { $sum: { $cond: [{ $eq: ['$status', 'Available'] }, 1, 0] } },
+                    moving: { $sum: { $cond: [{ $in: ['$status', ['Moving', 'In Transit']] }, 1, 0] } },
+                    repair: { $sum: { $cond: [{ $in: ['$status', ['Repair', 'Under Repair', 'Damaged/Repair']] }, 1, 0] } },
+                    printed: { $sum: { $cond: [{ $eq: ['$isPrinted', true] }, 1, 0] } },
+                    unprinted: { $sum: { $cond: [{ $ne: ['$isPrinted', true] }, 1, 0] } }
+                }
+            }
+        ])
     ]);
+
+    const statusCounts = statusAgg && statusAgg[0] ? {
+        all: statusAgg[0].all || 0,
+        available: statusAgg[0].available || 0,
+        moving: statusAgg[0].moving || 0,
+        repair: statusAgg[0].repair || 0,
+        printed: statusAgg[0].printed || 0,
+        unprinted: statusAgg[0].unprinted || 0
+    } : { all: total, available: 0, moving: 0, repair: 0, printed: 0, unprinted: 0 };
 
     return {
         data,
         total,
+        statusCounts,
         page: parseInt(page),
         limit: parseInt(limit),
         totalPages: Math.ceil(total / limit)
@@ -1952,8 +2032,22 @@ const inspectTools = async ({ toolIds, result, action, validation, remarks = '',
     }
 };
 
+const getToolsByIds = async (toolIds) => {
+    if (!Array.isArray(toolIds) || toolIds.length === 0) {
+        return [];
+    }
+    return Tool.find({
+        _id: { $in: toolIds },
+        isDeleted: { $ne: true }
+    })
+    .populate('project', 'name projectCode')
+    .populate('currentSite', 'name location storeCode')
+    .lean();
+};
+
 export const toolService = {
     getToolsByStoreId,
+    getToolsByIds,
     createToolInStore,
     updateToolById,
     deleteToolById,

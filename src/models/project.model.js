@@ -10,7 +10,8 @@ const projectSchema = new mongoose.Schema({
     budget: { type: mongoose.Schema.Types.Mixed },
     deadline: { type: String, default: 'TBD' }
 }, {
-    timestamps: true
+    timestamps: true,
+    strict: false
 });
 
 export const Project = mongoose.model('Project', projectSchema);

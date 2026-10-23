@@ -11,7 +11,9 @@ router.post('/scrap-delivery', restrictInspectionUser('creating scrap delivery c
 router.post('/return', challanController.createReturnChallan);
 router.get('/', challanController.getChallans);
 router.get('/:id', challanController.getChallanById);
+router.get('/:id/pdf', challanController.downloadChallanPdf);
 router.put('/:id', challanController.updateDeliveryChallan);
+router.post('/:id/cancel', challanController.cancelDeliveryChallan);
 router.post('/log-pdf-download', challanController.logPdfDownload);
 
 export default router;

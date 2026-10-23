@@ -16,13 +16,17 @@ import {
     bulkPermanentDeleteTools,
     transferTools,
     lookupToolValidity,
-    inspectTools
+    inspectTools,
+    getToolsByIds
 } from '../controllers/tool.controller.js';
 import { authenticate, requireAdmin, requireInspectionPermission, restrictInspectionUser } from '../middleware/auth.middleware.js';
 
 const router = express.Router();
 
 router.use(authenticate);
+
+// Batch retrieve tools by IDs
+router.post('/batch-get', getToolsByIds);
 
 // Tool Validity Lookup (Requires JWT Authentication - Guest or User)
 router.get('/lookup-validity', lookupToolValidity);

@@ -391,25 +391,47 @@ export const createDeliveryChallan = async (data, user = {}) => {
     const unprintedTools = toolsToCheck.filter(t => !t.isPrinted);
     if (unprintedTools.length > 0) {
         const unprintedLabels = unprintedTools.map(t => t.toolId || t.toolCode || t.description || t._id.toString()).join(', ');
-        throw new Error(`Cannot create Delivery Challan: Tool(s) [${unprintedLabels}] are not marked as Printed. All selected tools must be printed before creating a Delivery Challan.`);
+        const err = new Error(`Cannot create Delivery Challan: Tool(s) [${unprintedLabels}] are not marked as Printed. All selected tools must be printed before creating a Delivery Challan.`);
+        err.statusCode = 400;
+        throw err;
     }
 
     // When transferring, tools are already dispatched on source DC so status is expected to be Moving
     if (!sourceDc) {
         const invalidMoving = toolsToCheck.filter(t => t.status === 'Moving');
         if (invalidMoving.length > 0) {
-            throw new Error(`Cannot create Delivery Challan: Tool(s) ${invalidMoving.map(t => t.toolId).join(', ')} are already Moving`);
+            const movingToolIds = invalidMoving.map(t => t._id);
+            const activeDcs = await Challan.find({
+                challanType: 'Delivery',
+                status: { $in: ['Active', 'Pending'] },
+                'items.tool': { $in: movingToolIds }
+            }).select('challanNumber siteCode subcontractorName vendor').lean();
+
+            const dcDetails = activeDcs.map(dc => {
+                const recipient = dc.subcontractorName || dc.vendor?.name || 'Subcontractor';
+                const site = dc.siteCode ? ` [Site: ${dc.siteCode}]` : '';
+                return `${dc.challanNumber}${site} (${recipient})`;
+            }).join(', ');
+
+            const dcSuffix = dcDetails ? ` on active Delivery Challan: ${dcDetails}` : '';
+            const err = new Error(`Cannot create Delivery Challan: Tool(s) ${invalidMoving.map(t => t.toolId || t.toolCode || t._id).join(', ')} are already dispatched (status: Moving)${dcSuffix}. To re-issue, tools must first be returned via Return Challan (RC) or transferred via Site Transfer.`);
+            err.statusCode = 400;
+            throw err;
         }
     }
 
     const invalidMissing = toolsToCheck.filter(t => t.status === 'Missing');
     if (invalidMissing.length > 0) {
-        throw new Error(`Cannot create Delivery Challan: Tool(s) ${invalidMissing.map(t => t.toolId).join(', ')} are marked as Missing`);
+        const err = new Error(`Cannot create Delivery Challan: Tool(s) ${invalidMissing.map(t => t.toolId).join(', ')} are marked as Missing`);
+        err.statusCode = 400;
+        throw err;
     }
 
     const invalidRepair = toolsToCheck.filter(t => (t.status || '').toLowerCase() === 'repair');
     if (invalidRepair.length > 0) {
-        throw new Error(`Cannot create Delivery Challan: Tool(s) ${invalidRepair.map(t => t.toolId || t.description).join(', ')} are currently under Repair and cannot be issued in a Delivery Challan.`);
+        const err = new Error(`Cannot create Delivery Challan: Tool(s) ${invalidRepair.map(t => t.toolId || t.description).join(', ')} are currently under Repair and cannot be issued in a Delivery Challan.`);
+        err.statusCode = 400;
+        throw err;
     }
 
     const targetVendorId = vendorId || (sourceDc && sourceDc.vendor?._id);
@@ -1315,6 +1337,54 @@ export const reconcileReturnedToolStatuses = async () => {
 };
 
 /**
+ * Self-healing reconciliation: Ensures tools marked as 'Moving' that are NOT on ANY
+ * active or pending Delivery Challan are reverted back to 'Available'.
+ */
+export const reconcileOrphanedMovingToolStatuses = async () => {
+    try {
+        const movingTools = await Tool.find({
+            status: { $in: ['Moving', 'In Transit', 'transit'] },
+            isDeleted: { $ne: true },
+            isScrapped: { $ne: true }
+        }).select('_id toolId status').lean();
+
+        if (!movingTools || movingTools.length === 0) return;
+
+        const toolsToRestore = [];
+
+        for (const t of movingTools) {
+            const activeDc = await Challan.findOne({
+                challanType: 'Delivery',
+                status: { $in: ['Active', 'Pending'] },
+                items: {
+                    $elemMatch: {
+                        $or: [
+                            { tool: t._id },
+                            { tool: t._id.toString() }
+                        ],
+                        returnStatus: { $nin: ['Returned', 'Missing'] }
+                    }
+                }
+            }).select('_id').lean();
+
+            if (!activeDc) {
+                toolsToRestore.push(t._id);
+            }
+        }
+
+        if (toolsToRestore.length > 0) {
+            console.log(`[reconcileOrphanedMovingToolStatuses] Restoring ${toolsToRestore.length} orphaned moving tool(s) back to Available:`, toolsToRestore);
+            await Tool.updateMany(
+                { _id: { $in: toolsToRestore } },
+                { $set: { status: 'Available' } }
+            );
+        }
+    } catch (err) {
+        console.error('[reconcileOrphanedMovingToolStatuses] Error reconciling orphaned moving tools:', err.message);
+    }
+};
+
+/**
  * Get paginated & filtered Challans
  */
 export const getChallans = async (params = {}) => {
@@ -1324,6 +1394,8 @@ export const getChallans = async (params = {}) => {
     await reconcileMissingToolStatuses();
     // Self-healing: reconcile any returned tool statuses
     await reconcileReturnedToolStatuses();
+    // Self-healing: reconcile any orphaned moving tool statuses
+    await reconcileOrphanedMovingToolStatuses();
 
     const {
         page = 1,
@@ -1453,12 +1525,22 @@ export const getChallans = async (params = {}) => {
  * Get single Challan by ID
  */
 export const getChallanById = async (id) => {
-    const challan = await Challan.findById(id).lean();
+    const challan = await Challan.findById(id).populate('items.tool').lean();
     if (!challan) {
         throw new Error('Challan not found');
     }
     if (challan.status === 'Returned') {
         challan.status = 'Completed';
+    }
+    if (Array.isArray(challan.items)) {
+        challan.items = challan.items.map(it => {
+            const toolDoc = it.tool && typeof it.tool === 'object' ? it.tool : {};
+            const matCode = it.materialCode || it.toolCode || toolDoc.toolCode || toolDoc.materialCode || '';
+            return {
+                ...it,
+                materialCode: matCode || it.materialCode
+            };
+        });
     }
     return challan;
 };
@@ -1520,3 +1602,85 @@ export const logPdfDownload = async (referenceNumber, user = {}, details = 'Down
         details
     });
 };
+
+/**
+ * Cancel an active Delivery Challan
+ * - Can only cancel if DC is 'Active' and no items have been returned or marked missing yet
+ * - Restores all tools associated with this DC back to 'Available'
+ * - Records ToolMovement log and ChallanAuditLog
+ * - Decrements vendor DC metrics
+ */
+export const cancelDeliveryChallan = async (id, reason = '', user = {}) => {
+    const challan = await Challan.findById(id);
+    if (!challan) {
+        const err = new Error('Delivery Challan not found');
+        err.statusCode = 404;
+        throw err;
+    }
+
+    if (challan.challanType !== 'Delivery') {
+        const err = new Error(`Only Delivery Challans can be cancelled (challanType is '${challan.challanType}')`);
+        err.statusCode = 400;
+        throw err;
+    }
+
+    if (challan.status !== 'Active') {
+        const err = new Error(`Cannot cancel Delivery Challan ${challan.challanNumber}: status is '${challan.status}' (Must be Active)`);
+        err.statusCode = 400;
+        throw err;
+    }
+
+    if ((challan.returnedCount || 0) > 0 || (challan.missingCount || 0) > 0) {
+        const err = new Error(`Cannot cancel Delivery Challan ${challan.challanNumber}: Tools have already been processed in a Return Challan (${challan.returnedCount} returned, ${challan.missingCount} missing)`);
+        err.statusCode = 400;
+        throw err;
+    }
+
+    // Tools to revert back to Available
+    const toolIds = (challan.items || []).map(i => i.tool).filter(Boolean);
+
+    challan.status = 'Cancelled';
+    challan.remarks = challan.remarks ? `${challan.remarks} | Cancelled: ${reason || 'Cancelled by user'}` : `Cancelled: ${reason || 'Cancelled by user'}`;
+    await challan.save();
+
+    if (toolIds.length > 0) {
+        await Tool.updateMany(
+            { _id: { $in: toolIds } },
+            { $set: { status: 'Available' } }
+        );
+
+        const createdBy = {
+            _id: user._id || null,
+            name: user.name || user.username || 'System User',
+            email: user.email || 'system@landt.com'
+        };
+
+        const cancelLogs = (challan.items || []).map(item => ({
+            tool: item.tool,
+            toolIdStr: item.toolId,
+            description: item.description || '',
+            movementType: 'Cancellation',
+            from: challan.subcontractorName || challan.vendor?.name || 'Subcontractor',
+            to: 'Store',
+            referenceNumber: challan.challanNumber,
+            date: new Date(),
+            user: createdBy.name,
+            remarks: reason || `Cancelled Delivery Challan ${challan.challanNumber}`
+        }));
+        await ToolMovement.insertMany(cancelLogs);
+
+        await ChallanAuditLog.create({
+            user: createdBy,
+            action: 'DC Cancellation',
+            referenceNumber: challan.challanNumber,
+            details: `Cancelled Delivery Challan ${challan.challanNumber} (${toolIds.length} tools restored to Available). Reason: ${reason || 'Cancelled by user'}`
+        });
+
+        if (challan.vendor?._id) {
+            await vendorService.updateVendorMetrics(challan.vendor._id, { dcDelta: -1 });
+        }
+    }
+
+    return challan;
+};
+

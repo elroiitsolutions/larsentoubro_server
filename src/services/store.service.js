@@ -1,11 +1,19 @@
 import { Store } from '../models/store.model.js';
 import { Tool } from '../models/tool.model.js';
+import { Project } from '../models/project.model.js';
 
 const createStore = async (storeData) => {
     const data = { ...storeData };
-    if (data.storeName) data.name = data.storeName;
+    if (data.storeName && !data.name) data.name = data.storeName;
+    if (data.name && !data.storeName) data.storeName = data.name;
     if (data.projectId && !data.project) {
         data.project = data.projectId;
+    }
+    if (!data.project) {
+        const firstProject = await Project.findOne();
+        if (firstProject) {
+            data.project = firstProject._id;
+        }
     }
     const store = new Store(data);
     await store.save();
@@ -73,7 +81,9 @@ const getStoreById = async (id, assignedToolIds = null) => {
 };
 
 const updateStore = async (id, updateData) => {
-    return await Store.findByIdAndUpdate(id, updateData, { new: true, runValidators: true });
+    const data = { ...updateData };
+    if (data.storeName && !data.name) data.name = data.storeName;
+    return await Store.findByIdAndUpdate(id, data, { new: true, runValidators: true });
 };
 
 const deleteStore = async (id) => {

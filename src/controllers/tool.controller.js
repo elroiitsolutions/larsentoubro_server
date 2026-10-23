@@ -148,6 +148,16 @@ export const getToolsByStoreId = async (req, res, next) => {
     }
 };
 
+export const getToolsByIds = async (req, res, next) => {
+    try {
+        const { toolIds } = req.body;
+        const tools = await toolService.getToolsByIds(toolIds);
+        res.status(200).json({ success: true, data: tools });
+    } catch (error) {
+        next(error);
+    }
+};
+
 export const exportToolsByStoreId = async (req, res, next) => {
     try {
         const { storeId } = req.params;

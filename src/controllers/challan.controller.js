@@ -1,4 +1,5 @@
 import * as challanService from '../services/challan.service.js';
+import * as challanPdfService from '../services/challanPdf.service.js';
 
 export const createDeliveryChallan = async (req, res, next) => {
     try {
@@ -79,3 +80,36 @@ export const logPdfDownload = async (req, res, next) => {
         next(error);
     }
 };
+
+export const cancelDeliveryChallan = async (req, res, next) => {
+    try {
+        const { reason } = req.body;
+        const challan = await challanService.cancelDeliveryChallan(req.params.id, reason, req.user || {});
+        res.status(200).json({ success: true, data: challan, message: 'Delivery Challan cancelled successfully and tools reverted to Available' });
+    } catch (error) {
+        next(error);
+    }
+};
+
+export const downloadChallanPdf = async (req, res, next) => {
+    try {
+        const challan = await challanService.getChallanById(req.params.id);
+        if (!challan) {
+            return res.status(404).json({ success: false, message: 'Challan not found' });
+        }
+
+        const safeNumber = String(challan.challanNumber || challan._id || 'Challan').replace(/[/\\?%*:|"<>]/g, '-');
+        const filename = `${safeNumber}.pdf`;
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+        await challanPdfService.streamChallanPdf(challan, res);
+
+        // Record audit download log in background
+        challanService.logPdfDownload(challan.challanNumber || challan._id, req.user || {}, 'Downloaded Official Challan PDF').catch(() => {});
+    } catch (error) {
+        next(error);
+    }
+};
+
