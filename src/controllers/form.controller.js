@@ -2,6 +2,14 @@ import { FormDefinition } from '../models/formDefinition.model.js';
 import { FormSubmission } from '../models/formSubmission.model.js';
 import { z } from 'zod';
 
+/**
+ * [SHARED] Dynamic Form Controller
+ * Consumed by both Web Application (form.service.ts) and Mobile App (formService.ts).
+ */
+
+/**
+ * [SHARED] generateZodSchema - Utility to compile dynamic form field definitions into Zod validation schema
+ */
 const generateZodSchema = (fields) => {
   const schemaShape = {};
 
@@ -54,6 +62,9 @@ const generateZodSchema = (fields) => {
   return z.object(schemaShape);
 };
 
+/**
+ * [SHARED] createForm - Create or update a dynamic form definition schema
+ */
 export const createForm = async (req, res, next) => {
   try {
     const { name, slug, description, fields = [] } = req.body;
@@ -182,6 +193,9 @@ const seedDefaultForms = async () => {
   }
 };
 
+/**
+ * [SHARED] getForms - Fetch all active form definitions
+ */
 export const getForms = async (req, res, next) => {
   try {
     await seedDefaultForms().catch(err => console.error("Error seeding default forms:", err));
@@ -192,6 +206,9 @@ export const getForms = async (req, res, next) => {
   }
 };
 
+/**
+ * [SHARED] getFormBySlug - Fetch full schema and field definitions by form slug
+ */
 export const getFormBySlug = async (req, res, next) => {
   try {
     const { slug } = req.params;
@@ -208,6 +225,9 @@ export const getFormBySlug = async (req, res, next) => {
   }
 };
 
+/**
+ * [SHARED] submitForm - Validate submitted dynamic form data against schema and persist entry
+ */
 export const submitForm = async (req, res, next) => {
   try {
     const { slug } = req.params;

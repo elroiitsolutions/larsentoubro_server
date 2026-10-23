@@ -2,6 +2,12 @@ import PDFDocument from 'pdfkit';
 import { LNT_LOGO_BASE64 } from '../assets/logoBase64.js';
 
 /**
+ * [SHARED] Challan PDF Generation Service
+ * Generates official Larsen & Toubro PDF layout for Delivery, Return, and Scrap Delivery Challans.
+ * Consumed by both Web Application and Mobile App for direct PDF downloads.
+ */
+
+/**
  * Format date to DD-MM-YYYY (e.g. 08-10-2026) matching web template
  */
 const formatDate = (dateInput) => {

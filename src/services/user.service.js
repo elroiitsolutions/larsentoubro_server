@@ -1,5 +1,11 @@
 import { User } from '../models/user.model.js';
 
+/**
+ * [SHARED] User Service
+ * Business logic and database operations for Users, Subusers, Roles, and Permission enforcement.
+ * Consumed by both Web Application (auth.service.ts, user.service.ts) and Mobile App (authService.ts, userService.ts).
+ */
+
 const enforcePagePermissions = (data, existingRole = 'User') => {
     const role = data.role || existingRole;
     if (role === 'Admin') {

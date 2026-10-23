@@ -1,6 +1,14 @@
 import { storeService } from '../services/store.service.js';
 import { getVendorAssignedScope } from '../utils/vendorScope.js';
 
+/**
+ * [SHARED] Store Controller
+ * Consumed by both Web Application (store.service.ts) and Mobile App (storeService.ts).
+ */
+
+/**
+ * [SHARED] createStore - Create a new store (Admin only)
+ */
 export const createStore = async (req, res, next) => {
     try {
         if (req.user && req.user.role !== 'Admin') {
@@ -13,6 +21,9 @@ export const createStore = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] getStores - List stores filtered by project or user store assignments
+ */
 export const getStores = async (req, res, next) => {
     try {
         let assignedStoreIds = null;
@@ -41,6 +52,9 @@ export const getStores = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] getStoreById - Fetch store details by ID with access check
+ */
 export const getStoreById = async (req, res, next) => {
     try {
         let assignedToolIds = null;
@@ -67,6 +81,9 @@ export const getStoreById = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] updateStore - Update store name, location, or metadata (Admin only)
+ */
 export const updateStore = async (req, res, next) => {
     try {
         if (req.user && req.user.role !== 'Admin') {
@@ -82,6 +99,9 @@ export const updateStore = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] deleteStore - Delete store record (Admin only)
+ */
 export const deleteStore = async (req, res, next) => {
     try {
         if (req.user && req.user.role !== 'Admin') {

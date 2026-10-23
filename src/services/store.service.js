@@ -2,6 +2,12 @@ import { Store } from '../models/store.model.js';
 import { Tool } from '../models/tool.model.js';
 import { Project } from '../models/project.model.js';
 
+/**
+ * [SHARED] Store Service
+ * Business logic and database operations for Store catalog and site inventory.
+ * Consumed by both Web Application (store.service.ts) and Mobile App (storeService.ts).
+ */
+
 const createStore = async (storeData) => {
     const data = { ...storeData };
     if (data.storeName && !data.name) data.name = data.storeName;

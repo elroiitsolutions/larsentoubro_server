@@ -1,5 +1,13 @@
 import * as vendorService from '../services/vendor.service.js';
 
+/**
+ * [WEB] Vendor Controller
+ * Exclusively consumed by Web Application (client/src/services/vendor.service.ts).
+ */
+
+/**
+ * [WEB] getVendors - Fetch paginated subcontractor/vendor list
+ */
 export const getVendors = async (req, res, next) => {
     try {
         const result = await vendorService.getVendors(req.query);
@@ -9,6 +17,9 @@ export const getVendors = async (req, res, next) => {
     }
 };
 
+/**
+ * [WEB] getVendorById - Fetch vendor details by ID
+ */
 export const getVendorById = async (req, res, next) => {
     try {
         const vendor = await vendorService.getVendorById(req.params.id);
@@ -18,6 +29,9 @@ export const getVendorById = async (req, res, next) => {
     }
 };
 
+/**
+ * [WEB] createVendor - Create a new vendor profile
+ */
 export const createVendor = async (req, res, next) => {
     try {
         const vendor = await vendorService.createVendor(req.body);
@@ -27,6 +41,9 @@ export const createVendor = async (req, res, next) => {
     }
 };
 
+/**
+ * [WEB] updateVendor - Update existing vendor profile
+ */
 export const updateVendor = async (req, res, next) => {
     try {
         const vendor = await vendorService.updateVendor(req.params.id, req.body);
@@ -36,6 +53,9 @@ export const updateVendor = async (req, res, next) => {
     }
 };
 
+/**
+ * [WEB] deleteVendor - Remove vendor profile
+ */
 export const deleteVendor = async (req, res, next) => {
     try {
         await vendorService.deleteVendor(req.params.id);

@@ -12,7 +12,14 @@ import * as vendorService from './vendor.service.js';
 import * as profileService from './profile.service.js';
 
 /**
- * Helper to generate sequential Challan numbers like DC-26-001 or RC-26-001
+ * [SHARED] & [APP] Challan Service
+ * Business logic, counter allocation, tool movement tracking, and audit logging for Delivery, Return, and Scrap Challans.
+ * - [SHARED]: Core creation, updates, PDF logging, querying, and reconciliation across Web and Mobile.
+ * - [APP]: cancelDeliveryChallan (Exclusively invoked by Mobile App challan details).
+ */
+
+/**
+ * [SHARED] generateChallanNumber - Helper to generate sequential Challan numbers like DC-26-001 or RC-26-001
  * - Counter resets per year (using year in counterId)
  * - DC and RC have separate counters
  * - Atomic $inc operation ensures concurrency safety
@@ -1604,7 +1611,8 @@ export const logPdfDownload = async (referenceNumber, user = {}, details = 'Down
 };
 
 /**
- * Cancel an active Delivery Challan
+ * [APP] cancelDeliveryChallan - Cancel an active Delivery Challan
+ * - Exclusively invoked by Mobile App challan details screen
  * - Can only cancel if DC is 'Active' and no items have been returned or marked missing yet
  * - Restores all tools associated with this DC back to 'Available'
  * - Records ToolMovement log and ChallanAuditLog

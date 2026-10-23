@@ -7,6 +7,15 @@ import ToolAuditLog from '../models/toolAuditLog.model.js';
 import { getVendorAssignedScope } from '../utils/vendorScope.js';
 import { reconcileMissingToolStatuses } from './challan.service.js';
 
+/**
+ * [SHARED] Dashboard & Analytics Service
+ * Aggregates enterprise statistics, tool status metrics, movement charts, and validity extension.
+ * Consumed by both Web Application (dashboard.service.ts) and Mobile App (dashboardService.ts).
+ */
+
+/**
+ * [SHARED] getDashboardStats - Calculate total counts, category distribution, DC/RC status, and alerts
+ */
 export const getDashboardStats = async (filters = {}, user = null) => {
     // Self-healing: Reconcile missing tool statuses across projects to eliminate cross-project pollution
     await reconcileMissingToolStatuses();

@@ -1,5 +1,13 @@
 import dashboardService from '../services/dashboard.service.js';
 
+/**
+ * [SHARED] Dashboard Controller
+ * Consumed by both Web Application (dashboard.service.ts) and Mobile App (dashboardService.ts).
+ */
+
+/**
+ * [SHARED] getDashboardStats - Aggregate tool statuses, pending DC/RC, and expiry alerts
+ */
 export const getDashboardStats = async (req, res, next) => {
     try {
         const stats = await dashboardService.getDashboardStats(req.query, req.user);
@@ -12,6 +20,9 @@ export const getDashboardStats = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] extendToolLife - Extend tool validation/expiry date by designated years
+ */
 export const extendToolLife = async (req, res, next) => {
     try {
         const { toolId } = req.params;

@@ -12,6 +12,16 @@ import {
 import { FormDefinition } from '../models/formDefinition.model.js';
 import { processImportJob, addJobListener, removeJobListener } from '../services/importWorker.service.js';
 
+/**
+ * [SHARED] & [WEB] Import Controller
+ * Bulk tool import engine supporting Excel validation, background processing, and SSE streaming.
+ * Core sample download, preview, and commit are [SHARED] (Web & Mobile BulkImportModal).
+ * SSE progress streaming and paginated job views are [WEB] exclusive.
+ */
+
+/**
+ * [SHARED] downloadStoreToolsSample - Generate and download dynamic Excel template for bulk tool import
+ */
 const downloadStoreToolsSample = async (req, res, next) => {
     try {
         const form = await FormDefinition.findOne({ slug: 'tool-form', isActive: true });
@@ -71,9 +81,9 @@ const formatImportDateValue = (val) => {
 };
 
 /**
- * PREVIEW: Parse xlsx, validate rows, store in ImportJob, return summary + first page.
- * Records are now stored server-side — the client never holds 100K records in memory.
-   */
+ * [SHARED] previewStoreToolsImport - Parse spreadsheet, validate records, create ImportJob, and return summary
+ * Consumed by both Web and Mobile BulkImportModal.
+ */
 const previewStoreToolsImport = async (req, res, next) => {
     try {
         const { storeId } = req.params;
@@ -229,8 +239,8 @@ const previewStoreToolsImport = async (req, res, next) => {
 };
 
 /**
- * GET paginated preview records from a stored ImportJob.
- * Client requests pages on demand instead of holding everything in memory.
+ * [WEB] getImportJobRecords - Paginated preview records from a stored ImportJob
+ * Exclusively consumed by Web Application bulk import wizard.
  */
 const getImportJobRecords = async (req, res, next) => {
     try {
@@ -265,7 +275,8 @@ const getImportJobRecords = async (req, res, next) => {
 };
 
 /**
- * GET import job status (for page reload / polling fallback).
+ * [WEB] getImportJobStatus - Query import job execution state and summary
+ * Exclusively consumed by Web Application bulk import wizard.
  */
 const getImportJobStatus = async (req, res, next) => {
     try {
@@ -286,8 +297,8 @@ const getImportJobStatus = async (req, res, next) => {
 };
 
 /**
- * COMMIT: Kick off background batch processing and return immediately.
- * The actual insert happens in importWorker.service.js via processImportJob().
+ * [SHARED] commitStoreToolsImport - Kick off background batch import processing
+ * Consumed by both Web and Mobile BulkImportModal.
  */
 const commitStoreToolsImport = async (req, res, next) => {
     try {
@@ -330,7 +341,8 @@ const commitStoreToolsImport = async (req, res, next) => {
 };
 
 /**
- * SSE endpoint: Stream real-time progress updates for a running import job.
+ * [WEB] streamImportJobProgress - SSE endpoint to stream real-time progress updates for import job
+ * Exclusively consumed by Web Application bulk import wizard.
  */
 const streamImportJobProgress = async (req, res, next) => {
     try {
@@ -372,9 +384,8 @@ const streamImportJobProgress = async (req, res, next) => {
 };
 
 /**
- * GET created tools for an import job with pagination.
- * Returns lightweight metadata + qrLink.
- * QR code images are rendered in the browser on-demand to avoid massive payloads and CPU event-loop blocking.
+ * [WEB] getImportedJobTools - Retrieve created tools for an import job with pagination
+ * Exclusively consumed by Web Application bulk import wizard.
  */
 const getImportedJobTools = async (req, res, next) => {
     try {

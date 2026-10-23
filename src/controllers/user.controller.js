@@ -9,6 +9,16 @@ import { realtimeService } from '../services/socket.service.js';
 import { Vendor } from '../models/vendor.model.js';
 import { parseUserAgent } from '../utils/deviceInfo.js';
 
+/**
+ * [SHARED] & [WEB] User Controller
+ * Handles authentication, approvals, subusers, RBAC, and real-time SSE.
+ * - [SHARED]: Core login, guest access, login approval polling, profile, user/subuser CRUD.
+ * - [WEB]: logoutUser, getOnlineUsers, streamRealtimeEvents.
+ */
+
+/**
+ * [SHARED] generateUserToken - Issue signed JWT containing user ID, role, and store assignments
+ */
 const generateUserToken = (user) => {
     return jwt.sign(
         { 
@@ -25,6 +35,9 @@ const generateUserToken = (user) => {
     );
 };
 
+/**
+ * [SHARED] createUser - Create a new system user with credentials and permissions (Admin only)
+ */
 const createUser = async (req, res, next) => {
     try {
         const existingEmail = await userService.getUserByEmail(req.body.email);
@@ -757,6 +770,7 @@ const guestLogin = async (req, res, next) => {
 };
 
 export const userController = {
+    // [SHARED] Core User Management
     createUser,
     createSubuser,
     getUsers,
@@ -767,13 +781,17 @@ export const userController = {
     deleteUser,
     deleteSubuser,
     getCurrentUser,
+
+    // [SHARED] Authentication & Multi-Device Approvals
     loginUser,
-    logoutUser,
     guestLogin,
     checkLoginRequestStatus,
     getPendingLoginRequests,
     approveLoginRequest,
     rejectLoginRequest,
+
+    // [WEB] Web Exclusive Session & Realtime Features
+    logoutUser,
     getOnlineUsers,
     streamRealtimeEvents
 };

@@ -1,5 +1,13 @@
 import * as reportService from '../services/report.service.js';
 
+/**
+ * [SHARED] Statutory Registers, Compliance & Audit Report Controller
+ * Consumed by both Web Application (report.service.ts) and Mobile App (reportService.ts).
+ */
+
+/**
+ * [SHARED] getToolsReport - Tools Master Register report data
+ */
 export const getToolsReport = async (req, res, next) => {
     try {
         const result = await reportService.getToolsReport(req.query, req.user);
@@ -9,6 +17,9 @@ export const getToolsReport = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] getChallansReport - Delivery & Return Challans Register report data
+ */
 export const getChallansReport = async (req, res, next) => {
     try {
         const result = await reportService.getChallansReport(req.query, req.user);
@@ -18,6 +29,9 @@ export const getChallansReport = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] getMissingToolsReport - Loss & Missing Tools Register report data
+ */
 export const getMissingToolsReport = async (req, res, next) => {
     try {
         const result = await reportService.getMissingToolsReport(req.query, req.user);
@@ -27,6 +41,9 @@ export const getMissingToolsReport = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] getInspectionsReport - Statutory Inspections & Compliance report data
+ */
 export const getInspectionsReport = async (req, res, next) => {
     try {
         const result = await reportService.getInspectionsReport(req.query, req.user);
@@ -36,6 +53,9 @@ export const getInspectionsReport = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] getScrapReport - Scrap & Asset Disposal Register report data
+ */
 export const getScrapReport = async (req, res, next) => {
     try {
         const result = await reportService.getScrapReport(req.query, req.user);
@@ -45,6 +65,9 @@ export const getScrapReport = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] getSubcontractorsReport - Subcontractor Custody Ledger report data
+ */
 export const getSubcontractorsReport = async (req, res, next) => {
     try {
         const result = await reportService.getSubcontractorsReport(req.query);
@@ -54,6 +77,9 @@ export const getSubcontractorsReport = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] exportReport - Generate and stream report binary in Excel or CSV format
+ */
 export const exportReport = async (req, res, next) => {
     try {
         const { type = 'tools', format = 'excel' } = req.query;
@@ -72,6 +98,9 @@ export const exportReport = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] getLoginReport - Admin Login Activity & Audit Trail report data
+ */
 export const getLoginReport = async (req, res, next) => {
     try {
         const result = await reportService.getLoginReport(req.query);
@@ -81,6 +110,9 @@ export const getLoginReport = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] exportLoginReport - Export Admin Login Activity & Audit Trail to Excel or CSV
+ */
 export const exportLoginReport = async (req, res, next) => {
     try {
         const { format = 'excel' } = req.query;

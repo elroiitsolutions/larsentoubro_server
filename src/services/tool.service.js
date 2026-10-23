@@ -6,6 +6,17 @@ import ToolAuditLog from '../models/toolAuditLog.model.js';
 import ToolIdGenerator from '../utils/tool-id.js';
 import * as XLSX from 'xlsx';
 
+/**
+ * [SHARED], [WEB] & [APP] Tool Inventory Service
+ * Core business logic and database queries for tool registry, search, status counts, lifecycle, and exports.
+ * - [SHARED]: getToolsByStoreId, createToolInStore, updateToolById, deleteToolById, bulkDeleteTools,
+ *             getDeletedTools, getScrappedTools, markToolsAsPrinted, unmarkToolsAsPrinted, restoreToolById,
+ *             bulkRestoreTools, permanentDeleteToolById, bulkPermanentDeleteTools, getToolById,
+ *             getToolFilterOptions, bulkEditTools, transferTools, bulkScrapTools, inspectTools.
+ * - [WEB]: exportToolsByStoreId (Excel spreadsheet workbook generator).
+ * - [APP]: getToolsByIds (Batch tool IDs lookup).
+ */
+
 const buildTokenCondition = (tok) => {
     const cleanTok = String(tok || '').trim();
     if (!cleanTok) return [];
@@ -2032,6 +2043,10 @@ const inspectTools = async ({ toolIds, result, action, validation, remarks = '',
     }
 };
 
+/**
+ * [APP] getToolsByIds - Batch query tools by array of tool ObjectIds
+ * Exclusively consumed by Mobile App (larsentoubro-app/src/features/tools/services/toolService.ts).
+ */
 const getToolsByIds = async (toolIds) => {
     if (!Array.isArray(toolIds) || toolIds.length === 0) {
         return [];
@@ -2046,28 +2061,37 @@ const getToolsByIds = async (toolIds) => {
 };
 
 export const toolService = {
+    // [SHARED] Store Inventory & Listing
     getToolsByStoreId,
-    getToolsByIds,
     createToolInStore,
+    getToolById,
+    getToolFilterOptions,
+
+    // [APP] Mobile Batch Selection
+    getToolsByIds,
+
+    // [WEB] Web Excel Export
+    exportToolsByStoreId,
+
+    // [SHARED] Tool Lifecycle & Trash Operations
     updateToolById,
     deleteToolById,
     bulkDeleteTools,
     getDeletedTools,
-    getScrappedTools,
-    markToolsAsPrinted,
-    unmarkToolsAsPrinted,
     restoreToolById,
     bulkRestoreTools,
     permanentDeleteToolById,
     bulkPermanentDeleteTools,
-    exportToolsByStoreId,
-    getToolById,
-    getToolFilterOptions,
+
+    // [SHARED] Scrap, Print Status, Transfer & Inspection
+    getScrappedTools,
+    bulkScrapTools,
+    markToolsAsPrinted,
+    unmarkToolsAsPrinted,
     bulkEditTools,
     transferTools,
-    syncToolIdReferences,
-    bulkScrapTools,
-    inspectTools
+    inspectTools,
+    syncToolIdReferences
 };
 
 

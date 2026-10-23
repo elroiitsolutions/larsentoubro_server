@@ -1,6 +1,11 @@
 import { LoginRequest } from '../models/loginRequest.model.js';
 import { realtimeService } from './socket.service.js';
 
+/**
+ * [SHARED] Login Request Expiry Worker
+ * Background cron worker checking for timed out pending multi-device login requests.
+ * Manages expiry for both Web and Mobile client login attempts.
+ */
 export function startExpiryWorker() {
     // Run every 60 seconds
     setInterval(async () => {

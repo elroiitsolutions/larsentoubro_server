@@ -1,5 +1,10 @@
 import EventEmitter from 'events';
 
+/**
+ * [WEB] Realtime SSE Service
+ * Manages active Server-Sent Events (SSE) connections, broadcast events, and online user counts.
+ * Exclusively consumed by Web Application for real-time multi-device approval events and online sessions.
+ */
 class RealtimeService extends EventEmitter {
     constructor() {
         super();

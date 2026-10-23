@@ -3,6 +3,18 @@ import { toolService } from '../services/tool.service.js';
 import { getVendorAssignedScope } from '../utils/vendorScope.js';
 import { Tool } from '../models/tool.model.js';
 
+/**
+ * [SHARED], [WEB] & [APP] Tool Inventory Controller
+ * Handles tool inventory operations, QR lookup, lifecycle, and bulk management.
+ * - [SHARED]: Core tool CRUD, QR validity lookup, trash, scrap, inspection, print status, transfer.
+ * - [WEB]: exportToolsByStoreId (Excel catalog export).
+ * - [APP]: getToolsByIds (Batch retrieval by ID array).
+ */
+
+/**
+ * [SHARED] lookupToolValidity - Fast tool lookup and validity status check by QR code or ID
+ * Used by Mobile camera scanner and Web validity lookup modal.
+ */
 export const lookupToolValidity = async (req, res, next) => {
     try {
         const rawCode = (req.query.code || req.query.toolId || req.query.qrCode || req.body.code || '').trim();
@@ -126,6 +138,9 @@ const verifyStoreAccess = (req, storeId) => {
     return true;
 };
 
+/**
+ * [SHARED] getToolsByStoreId - List store tools with filters, pagination, search, and statusCounts
+ */
 export const getToolsByStoreId = async (req, res, next) => {
     try {
         const { storeId } = req.params;
@@ -148,6 +163,10 @@ export const getToolsByStoreId = async (req, res, next) => {
     }
 };
 
+/**
+ * [APP] getToolsByIds - Batch retrieve tool records by array of tool IDs
+ * Exclusively consumed by Mobile App (larsentoubro-app/src/features/tools/services/toolService.ts).
+ */
 export const getToolsByIds = async (req, res, next) => {
     try {
         const { toolIds } = req.body;
@@ -158,6 +177,10 @@ export const getToolsByIds = async (req, res, next) => {
     }
 };
 
+/**
+ * [WEB] exportToolsByStoreId - Export store tool registry to Excel or CSV
+ * Exclusively consumed by Web application store management view.
+ */
 export const exportToolsByStoreId = async (req, res, next) => {
     try {
         const { storeId } = req.params;
@@ -190,6 +213,9 @@ export const exportToolsByStoreId = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] createToolInStore - Add single tool item to store inventory
+ */
 export const createToolInStore = async (req, res, next) => {
     try {
         if (req.user && req.user.role === 'Vendor') {
@@ -206,6 +232,9 @@ export const createToolInStore = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] updateToolById - Modify master record of a single tool
+ */
 export const updateToolById = async (req, res, next) => {
     try {
         if (req.user && req.user.role === 'Vendor') {
@@ -219,6 +248,9 @@ export const updateToolById = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] deleteToolById - Soft-delete single tool to trash
+ */
 export const deleteToolById = async (req, res, next) => {
     try {
         if (req.user && req.user.role === 'Vendor') {
@@ -235,6 +267,9 @@ export const deleteToolById = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] bulkDeleteTools - Soft-delete multiple selected tools to trash
+ */
 export const bulkDeleteTools = async (req, res, next) => {
     try {
         if (req.user && req.user.role === 'Vendor') {
@@ -256,6 +291,9 @@ export const bulkDeleteTools = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] getDeletedTools - List soft-deleted tools in trash
+ */
 export const getDeletedTools = async (req, res, next) => {
     try {
         if (req.user && req.user.role === 'Vendor') {
@@ -268,6 +306,9 @@ export const getDeletedTools = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] getScrappedTools - List scrapped tools register
+ */
 export const getScrappedTools = async (req, res, next) => {
     try {
         if (req.user && req.user.role === 'Vendor') {
@@ -280,6 +321,9 @@ export const getScrappedTools = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] bulkScrapTools - Mark tools directly as scrapped
+ */
 export const bulkScrapTools = async (req, res, next) => {
     try {
         if (req.user && req.user.role === 'Vendor') {
@@ -306,6 +350,9 @@ export const bulkScrapTools = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] markToolsAsPrinted - Update tool print status to true
+ */
 export const markToolsAsPrinted = async (req, res, next) => {
     try {
         if (req.user && req.user.role === 'Vendor') {
@@ -328,6 +375,9 @@ export const markToolsAsPrinted = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] unmarkToolsAsPrinted - Revert tool print status to false
+ */
 export const unmarkToolsAsPrinted = async (req, res, next) => {
     try {
         if (req.user && req.user.role === 'Vendor') {
@@ -350,6 +400,9 @@ export const unmarkToolsAsPrinted = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] restoreToolById - Restore single soft-deleted tool from trash
+ */
 export const restoreToolById = async (req, res, next) => {
     try {
         const { toolId } = req.params;
@@ -363,6 +416,9 @@ export const restoreToolById = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] bulkRestoreTools - Restore multiple soft-deleted tools from trash
+ */
 export const bulkRestoreTools = async (req, res, next) => {
     try {
         const { toolIds } = req.body;
@@ -376,6 +432,9 @@ export const bulkRestoreTools = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] permanentDeleteToolById - Permanently remove single tool from database
+ */
 export const permanentDeleteToolById = async (req, res, next) => {
     try {
         const { toolId } = req.params;
@@ -389,6 +448,9 @@ export const permanentDeleteToolById = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] bulkPermanentDeleteTools - Permanently purge multiple tools from database
+ */
 export const bulkPermanentDeleteTools = async (req, res, next) => {
     try {
         const { toolIds } = req.body;
@@ -402,6 +464,9 @@ export const bulkPermanentDeleteTools = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] getToolById - Fetch comprehensive tool details, lifecycle history, and validity
+ */
 export const getToolById = async (req, res, next) => {
     try {
         const toolId = decodeURIComponent(req.params.toolId);
@@ -440,6 +505,9 @@ export const getToolById = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] getToolFilterOptions - Retrieve distinct dropdown values for store tools filter modal
+ */
 export const getToolFilterOptions = async (req, res, next) => {
     try {
         const { storeId } = req.params;
@@ -453,6 +521,9 @@ export const getToolFilterOptions = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] bulkEditTools - Apply bulk updates across multiple tools
+ */
 export const bulkEditTools = async (req, res, next) => {
     try {
         if (req.user && req.user.role === 'Vendor') {
@@ -476,6 +547,9 @@ export const bulkEditTools = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] transferTools - Inter-store transfer of selected tools
+ */
 export const transferTools = async (req, res, next) => {
     try {
         if (req.user && req.user.role === 'Vendor') {
@@ -694,6 +768,9 @@ export const computeToolValidityAndStatus = (tool) => {
     }
 };
 
+/**
+ * [SHARED] inspectTools - Apply inspection records, update validity period and certification
+ */
 export const inspectTools = async (req, res, next) => {
     try {
         const { toolIds, result, action, validation, remarks } = req.body;

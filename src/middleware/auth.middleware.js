@@ -4,6 +4,12 @@ import { env } from '../config/env.js';
 import { User } from '../models/user.model.js';
 import { Vendor } from '../models/vendor.model.js';
 
+/**
+ * [SHARED] Authentication & RBAC Middleware
+ * Enforces unified JWT verification, role-based access control, guest limits,
+ * subuser hierarchy scopes, and inspection privileges for both Web and Mobile.
+ */
+
 const getGuestUser = (decoded = {}) => ({
     _id: decoded.id || 'guest_user_id',
     id: decoded.id || 'guest_user_id',

@@ -1,6 +1,15 @@
 import * as challanService from '../services/challan.service.js';
 import * as challanPdfService from '../services/challanPdf.service.js';
 
+/**
+ * [SHARED] & [APP] Challan Controller
+ * Handles Delivery, Return, and Scrap Challans.
+ * All core operations are [SHARED], except cancellation which is exclusively [APP].
+ */
+
+/**
+ * [SHARED] createDeliveryChallan - Issue tools out to subcontractors via Delivery Challan (DC)
+ */
 export const createDeliveryChallan = async (req, res, next) => {
     try {
         if (req.user && req.user.role !== 'Admin' && req.user.hasInspectionAccess) {
@@ -16,6 +25,9 @@ export const createDeliveryChallan = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] createScrapDeliveryChallan - Issue scrapped tools via Scrap Delivery Challan (SDC)
+ */
 export const createScrapDeliveryChallan = async (req, res, next) => {
     try {
         if (req.user && req.user.role !== 'Admin' && req.user.hasInspectionAccess) {
@@ -31,6 +43,9 @@ export const createScrapDeliveryChallan = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] createReturnChallan - Receive tools back into store inventory via Return Challan (RC)
+ */
 export const createReturnChallan = async (req, res, next) => {
     try {
         const challan = await challanService.createReturnChallan(req.body, req.user || {});
@@ -40,6 +55,9 @@ export const createReturnChallan = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] getChallans - Query challans list with status and vendor filtering
+ */
 export const getChallans = async (req, res, next) => {
     try {
         const queryParams = { ...req.query };
@@ -53,6 +71,9 @@ export const getChallans = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] getChallanById - Get full challan details and tool items by ID
+ */
 export const getChallanById = async (req, res, next) => {
     try {
         const challan = await challanService.getChallanById(req.params.id);
@@ -62,6 +83,9 @@ export const getChallanById = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] updateDeliveryChallan - Modify non-finalized delivery challan properties
+ */
 export const updateDeliveryChallan = async (req, res, next) => {
     try {
         const challan = await challanService.updateDeliveryChallan(req.params.id, req.body, req.user || {});
@@ -71,6 +95,9 @@ export const updateDeliveryChallan = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] logPdfDownload - Record PDF download event in challan history
+ */
 export const logPdfDownload = async (req, res, next) => {
     try {
         const { referenceNumber, details } = req.body;
@@ -81,6 +108,10 @@ export const logPdfDownload = async (req, res, next) => {
     }
 };
 
+/**
+ * [APP] cancelDeliveryChallan - Cancel active DC and revert tool statuses to Available
+ * Exclusively consumed by Mobile App challan action menu (larsentoubro-app/src/features/challans/services/challanService.ts).
+ */
 export const cancelDeliveryChallan = async (req, res, next) => {
     try {
         const { reason } = req.body;
@@ -91,6 +122,9 @@ export const cancelDeliveryChallan = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] downloadChallanPdf - Stream formatted Delivery / Return Challan PDF
+ */
 export const downloadChallanPdf = async (req, res, next) => {
     try {
         const challan = await challanService.getChallanById(req.params.id);

@@ -26,6 +26,10 @@ const storage = multer.diskStorage({
     }
 });
 
+/**
+ * [WEB] Profile Document Upload Multer Configuration
+ * Exclusively consumed by Web Application document attachment forms.
+ */
 export const upload = multer({
     storage,
     limits: { fileSize: 25 * 1024 * 1024 }, // 25MB max file size limit
@@ -41,6 +45,14 @@ export const upload = multer({
     }
 });
 
+/**
+ * [SHARED] Profile Directory Controller
+ * Core directory endpoints used by both Web and Mobile; document endpoints used by Web.
+ */
+
+/**
+ * [SHARED] getProfiles - List subcontractor, vendor, and team profiles
+ */
 export const getProfiles = async (req, res, next) => {
     try {
         const result = await profileService.getProfiles(req.query, req.user);
@@ -50,6 +62,9 @@ export const getProfiles = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] getProfileById - Fetch profile details and metrics
+ */
 export const getProfileById = async (req, res, next) => {
     try {
         const profile = await profileService.getProfileById(req.params.id, req.user);
@@ -59,6 +74,9 @@ export const getProfileById = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] createProfile - Create a new profile entry
+ */
 export const createProfile = async (req, res, next) => {
     try {
         const profile = await profileService.createProfile(req.body, req.user);
@@ -68,6 +86,9 @@ export const createProfile = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] updateProfile - Update existing profile entry
+ */
 export const updateProfile = async (req, res, next) => {
     try {
         const profile = await profileService.updateProfile(req.params.id, req.body, req.user);
@@ -77,6 +98,9 @@ export const updateProfile = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] deleteProfile - Delete profile entry
+ */
 export const deleteProfile = async (req, res, next) => {
     try {
         const profile = await profileService.deleteProfile(req.params.id, req.user);
@@ -86,6 +110,10 @@ export const deleteProfile = async (req, res, next) => {
     }
 };
 
+/**
+ * [WEB] uploadDocument - Attach file document to profile
+ * Exclusively used by Web profile manager UI.
+ */
 export const uploadDocument = async (req, res, next) => {
     try {
         const { id } = req.params;
@@ -118,6 +146,10 @@ export const uploadDocument = async (req, res, next) => {
     }
 };
 
+/**
+ * [WEB] deleteDocument - Remove attached file document from profile
+ * Exclusively used by Web profile manager UI.
+ */
 export const deleteDocument = async (req, res, next) => {
     try {
         const { id, docId } = req.params;
@@ -139,6 +171,10 @@ export const deleteDocument = async (req, res, next) => {
     }
 };
 
+/**
+ * [WEB] downloadDocumentFile - Serve uploaded document binary from disk
+ * Exclusively used by Web application document viewer.
+ */
 export const downloadDocumentFile = async (req, res, next) => {
     try {
         const { filename } = req.params;

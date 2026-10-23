@@ -10,6 +10,13 @@ import { Vendor } from '../models/vendor.model.js';
 import ExcelJS from 'exceljs';
 
 /**
+ * [SHARED] Statutory Registers & Report Service
+ * Aggregates enterprise audit reports (Tools Master Register, Challans, Missing Tools,
+ * Inspections, Scrap, Subcontractors, Logins) and generates multi-format Excel & CSV buffers.
+ * Consumed by both Web Application (report.service.ts) and Mobile App (reportService.ts).
+ */
+
+/**
  * Helper to apply date range filter
  */
 const applyDateRange = (query, dateField, startDate, endDate) => {
