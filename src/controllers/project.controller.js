@@ -1,6 +1,14 @@
 import { projectService } from '../services/project.service.js';
 import { getVendorAssignedScope } from '../utils/vendorScope.js';
 
+/**
+ * [SHARED] Project Controller
+ * Consumed by both Web Application (project.service.ts) and Mobile App (projectService.ts).
+ */
+
+/**
+ * [SHARED] createProject - Create a new project (Admin only)
+ */
 export const createProject = async (req, res, next) => {
     try {
         if (req.user && req.user.role !== 'Admin') {
@@ -13,6 +21,9 @@ export const createProject = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] getProjects - List projects scoped by user assignments or vendor role
+ */
 export const getProjects = async (req, res, next) => {
     try {
         let filter = {};
@@ -30,6 +41,9 @@ export const getProjects = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] getProjectById - Fetch single project record by ID with scope validation
+ */
 export const getProjectById = async (req, res, next) => {
     try {
         if (req.user && req.user.role === 'Vendor') {
@@ -53,6 +67,9 @@ export const getProjectById = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] updateProject - Update project details (Admin only)
+ */
 export const updateProject = async (req, res, next) => {
     try {
         if (req.user && req.user.role !== 'Admin') {
@@ -68,6 +85,9 @@ export const updateProject = async (req, res, next) => {
     }
 };
 
+/**
+ * [SHARED] deleteProject - Delete project record by ID (Admin only)
+ */
 export const deleteProject = async (req, res, next) => {
     try {
         if (req.user && req.user.role !== 'Admin') {

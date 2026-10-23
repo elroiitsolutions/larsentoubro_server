@@ -1,5 +1,10 @@
 import EventEmitter from 'events';
 
+/**
+ * [WEB] Realtime SSE Service
+ * Manages active Server-Sent Events (SSE) connections, broadcast events, and online user counts.
+ * Exclusively consumed by Web Application for real-time multi-device approval events and online sessions.
+ */
 class RealtimeService extends EventEmitter {
     constructor() {
         super();
@@ -70,6 +75,20 @@ class RealtimeService extends EventEmitter {
         
         this.sseClients.forEach(({ res, role }) => {
             if (role === 'Admin' || role === 'ADMIN') {
+                try {
+                    res.write(dataStr);
+                } catch (e) {}
+            }
+        });
+    }
+
+    // Send payload to specific user by ID
+    notifyUser(userId, event, data) {
+        const payload = { event, data };
+        const dataStr = `data: ${JSON.stringify(payload)}\n\n`;
+
+        this.sseClients.forEach(({ res, userId: clientUserId }) => {
+            if (clientUserId && String(clientUserId) === String(userId)) {
                 try {
                     res.write(dataStr);
                 } catch (e) {}

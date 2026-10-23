@@ -7,6 +7,15 @@ import ToolAuditLog from '../models/toolAuditLog.model.js';
 import { getVendorAssignedScope } from '../utils/vendorScope.js';
 import { reconcileMissingToolStatuses } from './challan.service.js';
 
+/**
+ * [SHARED] Dashboard & Analytics Service
+ * Aggregates enterprise statistics, tool status metrics, movement charts, and validity extension.
+ * Consumed by both Web Application (dashboard.service.ts) and Mobile App (dashboardService.ts).
+ */
+
+/**
+ * [SHARED] getDashboardStats - Calculate total counts, category distribution, DC/RC status, and alerts
+ */
 export const getDashboardStats = async (filters = {}, user = null) => {
     // Self-healing: Reconcile missing tool statuses across projects to eliminate cross-project pollution
     await reconcileMissingToolStatuses();
@@ -436,7 +445,7 @@ export const getDashboardStats = async (filters = {}, user = null) => {
         { status: 'Under Inspection', count: underInspection, color: '#8b5cf6' },
         { status: 'Inspection Due', count: inspectionDue, color: '#f59e0b' },
         { status: 'Expired', count: expired, color: '#ef4444' },
-        { status: 'Damaged / Repair', count: damagedRepair, color: '#f97316' },
+        { status: 'Repair', count: damagedRepair, color: '#f97316' },
         { status: 'Scrap', count: scrap, color: '#64748b' }
     ];
 
@@ -502,6 +511,7 @@ export const getDashboardStats = async (filters = {}, user = null) => {
             inspectionDue,
             expired,
             damagedRepair,
+            repair: damagedRepair,
             scrap,
             usable,
             unusable,

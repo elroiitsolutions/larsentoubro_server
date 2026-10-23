@@ -1,5 +1,11 @@
 import { Project } from '../models/project.model.js';
 
+/**
+ * [SHARED] Project Service
+ * Business logic and database operations for Project management.
+ * Consumed by both Web Application (project.service.ts) and Mobile App (projectService.ts).
+ */
+
 const createProject = async (projectData) => {
     const data = { ...projectData };
     if (data.projectName) data.name = data.projectName;

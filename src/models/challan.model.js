@@ -13,6 +13,7 @@ const challanItemSchema = new mongoose.Schema({
     quantity: { type: Number, default: 1 },
     unit: { type: String, default: 'NOS' },
     rate: { type: Number, default: 0 },
+    materialCode: { type: String, default: '' },
     remarks: { type: String, default: '' },
     returnStatus: { 
         type: String, 
@@ -29,6 +30,8 @@ const challanSchema = new mongoose.Schema({
     challanType: { type: String, enum: ['Delivery', 'Return', 'Transfer', 'Scrap'], required: true },
     status: { type: String, enum: ['Active', 'Completed', 'Cancelled', 'Transfer', 'Returned', 'Pending'], default: 'Active', index: true },
     isScrapDC: { type: Boolean, default: false },
+    indentNo: { type: String, default: '' },
+    docReferenceCode: { type: String, default: 'ECC-D&M/STR/906' },
     isStoreTransfer: { type: Boolean, default: false },
     project: {
         _id: { type: mongoose.Schema.Types.ObjectId, ref: 'Project' },

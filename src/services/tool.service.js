@@ -6,6 +6,50 @@ import ToolAuditLog from '../models/toolAuditLog.model.js';
 import ToolIdGenerator from '../utils/tool-id.js';
 import * as XLSX from 'xlsx';
 
+/**
+ * [SHARED], [WEB] & [APP] Tool Inventory Service
+ * Core business logic and database queries for tool registry, search, status counts, lifecycle, and exports.
+ * - [SHARED]: getToolsByStoreId, createToolInStore, updateToolById, deleteToolById, bulkDeleteTools,
+ *             getDeletedTools, getScrappedTools, markToolsAsPrinted, unmarkToolsAsPrinted, restoreToolById,
+ *             bulkRestoreTools, permanentDeleteToolById, bulkPermanentDeleteTools, getToolById,
+ *             getToolFilterOptions, bulkEditTools, transferTools, bulkScrapTools, inspectTools.
+ * - [WEB]: exportToolsByStoreId (Excel spreadsheet workbook generator).
+ * - [APP]: getToolsByIds (Batch tool IDs lookup).
+ */
+
+const buildTokenCondition = (tok) => {
+    const cleanTok = String(tok || '').trim();
+    if (!cleanTok) return [];
+    const escaped = cleanTok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const isNumeric = /^\d+$/.test(cleanTok);
+
+    const conds = [];
+
+    // Exact match on toolId (case-insensitive)
+    conds.push({ toolId: { $regex: `^${escaped}$`, $options: 'i' } });
+
+    if (isNumeric) {
+        const num = parseInt(cleanTok, 10);
+        if (!isNaN(num)) {
+            conds.push({ serialNumber: num });
+        }
+        // Suffix match on toolId (e.g. "0001" matches "SSSSOP0050825UE0001", "2759" matches "DSS01010T0526TPI2759")
+        conds.push({ toolId: { $regex: `${escaped}$`, $options: 'i' } });
+        // Exact match only for numeric toolCode (e.g. SAP material number "347470283")
+        conds.push({ toolCode: { $regex: `^${escaped}$`, $options: 'i' } });
+    } else {
+        // Alphanumeric code or text description
+        conds.push({ toolId: { $regex: `${escaped}$`, $options: 'i' } });
+        conds.push({ toolId: { $regex: escaped, $options: 'i' } });
+        conds.push({ toolCode: { $regex: `^${escaped}$`, $options: 'i' } });
+        conds.push({ toolCode: { $regex: `^${escaped}`, $options: 'i' } });
+        conds.push({ description: { $regex: escaped, $options: 'i' } });
+        conds.push({ toolType: { $regex: escaped, $options: 'i' } });
+    }
+
+    return conds;
+};
+
 const applyAdvancedFilters = (query, params) => {
     if (params.search && String(params.search).trim()) {
         if (!query.$and) query.$and = [];
@@ -13,13 +57,10 @@ const applyAdvancedFilters = (query, params) => {
 
         let tokens = [];
         if (rawSearch.includes(',') || rawSearch.includes('\n') || rawSearch.includes('|') || rawSearch.includes(';') || rawSearch.includes('\t')) {
-            const rawTokens = rawSearch.split(/[\n,|\t;]+/).map(t => t.trim()).filter(Boolean);
-            for (const rt of rawTokens) {
-                tokens.push(...rt.split(/\s+/).map(s => s.trim()).filter(Boolean));
-            }
+            tokens = rawSearch.split(/[\n,|\t;]+/).map(t => t.trim()).filter(Boolean);
         } else {
-            const spaceTokens = rawSearch.split(/[\s|\t;]+/).map(s => s.trim()).filter(Boolean);
-            const looksLikeMultipleCodes = spaceTokens.length > 1 && spaceTokens.every(t => /^[A-Za-z0-9_-]+$/.test(t) && (/\d/.test(t) || t.length >= 6));
+            const spaceTokens = rawSearch.split(/\s+/).map(s => s.trim()).filter(Boolean);
+            const looksLikeMultipleCodes = spaceTokens.length > 1 && spaceTokens.every(t => /^[A-Za-z0-9_-]+$/.test(t) && (/\d/.test(t) || t.length >= 4));
             if (looksLikeMultipleCodes) {
                 tokens = spaceTokens;
             } else {
@@ -37,27 +78,12 @@ const applyAdvancedFilters = (query, params) => {
             }
         }
 
-        if (uniqueTokens.length === 1) {
-            const escapedSearch = uniqueTokens[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            query.$and.push({
-                $or: [
-                    { description: { $regex: escapedSearch, $options: 'i' } },
-                    { toolId: { $regex: escapedSearch, $options: 'i' } },
-                    { toolCode: { $regex: escapedSearch, $options: 'i' } }
-                ]
-            });
-        } else if (uniqueTokens.length > 1) {
-            const tokenOrConditions = [];
-            for (const tok of uniqueTokens) {
-                const escaped = tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                tokenOrConditions.push(
-                    { toolId: { $regex: `^${escaped}$`, $options: 'i' } },
-                    { toolCode: { $regex: `^${escaped}$`, $options: 'i' } },
-                    { toolId: { $regex: escaped, $options: 'i' } },
-                    { toolCode: { $regex: escaped, $options: 'i' } },
-                    { description: { $regex: escaped, $options: 'i' } }
-                );
-            }
+        const tokenOrConditions = [];
+        for (const tok of uniqueTokens) {
+            tokenOrConditions.push(...buildTokenCondition(tok));
+        }
+
+        if (tokenOrConditions.length > 0) {
             query.$and.push({ $or: tokenOrConditions });
         }
     }
@@ -230,7 +256,7 @@ export const resequenceProjectToolSerials = async (projectId) => {
     }).select('serialNumber toolId').lean();
 
     const printedSerials = new Set(printedTools.map(t => t.serialNumber).filter(Boolean));
-    const printedToolIds = new Set(printedTools.map(t => t.toolId).filter(Boolean));
+    const printedToolIds = new Set(printedTools.map(t => t.toolId).filter(id => id && !id.startsWith('__TEMP_')));
 
     // 3. Fetch active (non-deleted, non-scrapped) tools to resequence.
     const activeTools = await Tool.find({
@@ -243,8 +269,9 @@ export const resequenceProjectToolSerials = async (projectId) => {
     const updates = [];
 
     for (const tool of activeTools) {
-        // Printed tools must NEVER have their serial number or Tool ID altered during re-sequencing!
-        if (tool.isPrinted) {
+        // Printed tools must NEVER have their serial number or Tool ID altered during re-sequencing,
+        // unless their toolId was accidentally left stuck with a __TEMP_ prefix.
+        if (tool.isPrinted && tool.toolId && !tool.toolId.startsWith('__TEMP_')) {
             continue;
         }
 
@@ -269,16 +296,16 @@ export const resequenceProjectToolSerials = async (projectId) => {
     }
 
     if (updates.length > 0) {
-        // Pass 1: Assign temporary toolId to avoid E11000 duplicate key collision on { project: 1, toolId: 1 }
+        // Pass 1: Assign temporary toolId in bulk to avoid E11000 duplicate key collision on { project: 1, toolId: 1 }
         const tempOps = updates.map(({ tool }) => ({
             updateOne: {
                 filter: { _id: tool._id },
                 update: { $set: { toolId: `__TEMP_${tool._id}_${Date.now()}` } }
             }
         }));
-        await Tool.bulkWrite(tempOps);
+        await Tool.bulkWrite(tempOps, { ordered: false });
 
-        // Pass 2: Assign final serial numbers, toolIds, and QR links
+        // Pass 2: Assign final serial numbers, toolIds, and QR links in bulk
         const finalOps = updates.map(({ tool, newSerial, newToolId, newQrLink }) => ({
             updateOne: {
                 filter: { _id: tool._id },
@@ -291,15 +318,18 @@ export const resequenceProjectToolSerials = async (projectId) => {
                 }
             }
         }));
-        await Tool.bulkWrite(finalOps);
+        await Tool.bulkWrite(finalOps, { ordered: false });
 
-        // Sync references in parallel to avoid 30s timeout on large bulk operations
-        const syncPromises = updates
-            .filter(({ tool, newToolId }) => tool.toolId && tool.toolId !== newToolId)
-            .map(({ tool, newToolId }) => syncToolIdReferences(tool._id, tool.toolId, newToolId));
+        // Only printed tools can have foreign references in Challans, Movements, or Missing lists.
+        // Unprinted tools are never dispatched on Challans, avoiding up to 18,000 redundant queries.
+        const printedUpdates = updates.filter(
+            ({ tool, newToolId }) => tool.isPrinted && tool.toolId && !tool.toolId.startsWith('__TEMP_') && tool.toolId !== newToolId
+        );
 
-        if (syncPromises.length > 0) {
-            await Promise.all(syncPromises);
+        if (printedUpdates.length > 0) {
+            await Promise.all(
+                printedUpdates.map(({ tool, newToolId }) => syncToolIdReferences(tool._id, tool.toolId, newToolId))
+            );
         }
     }
 
@@ -319,11 +349,29 @@ const getToolsByStoreId = async (storeId, params = {}) => {
         isScrapped: { $ne: true }
     };
 
-    if (params.assignedToolIds && Array.isArray(params.assignedToolIds)) {
-        query._id = { $in: params.assignedToolIds };
+    if (params.assignedToolIds) {
+        const assignedIds = Array.isArray(params.assignedToolIds)
+            ? params.assignedToolIds
+            : String(params.assignedToolIds).split(',').map(s => s.trim()).filter(Boolean);
+        if (assignedIds.length > 0) {
+            query._id = { $in: assignedIds };
+        }
     }
 
     applyAdvancedFilters(query, params);
+
+    // Self-healing reconciliation: Reconcile returned and orphaned tool statuses
+    try {
+        const { reconcileReturnedToolStatuses, reconcileOrphanedMovingToolStatuses } = await import('./challan.service.js');
+        if (typeof reconcileReturnedToolStatuses === 'function') {
+            await reconcileReturnedToolStatuses();
+        }
+        if (typeof reconcileOrphanedMovingToolStatuses === 'function') {
+            await reconcileOrphanedMovingToolStatuses();
+        }
+    } catch (e) {
+        // Silently continue
+    }
 
     // Self-healing backfill for any legacy records missing numeric serialNumber
     try {
@@ -347,21 +395,78 @@ const getToolsByStoreId = async (storeId, params = {}) => {
         sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
     }
 
+    // Fast lean response for multi-page Select All across filters
+    if (params.onlyIds === 'true' || params.onlyIds === true || params.allIds === 'true' || params.allIds === true) {
+        const leanTools = await Tool.find(query)
+            .select('_id toolId toolCode description name status isPrinted category toolType serialNumber validityPeriod validation')
+            .sort(sort)
+            .lean();
+        return {
+            ids: leanTools.map(t => t._id.toString()),
+            data: leanTools,
+            total: leanTools.length
+        };
+    }
+
+    const storeObjId = mongoose.Types.ObjectId.isValid(storeId) ? new mongoose.Types.ObjectId(storeId) : storeId;
+    const storeMatchFilter = {
+        $or: [
+            { currentSite: storeObjId },
+            { store: storeObjId },
+            { currentSite: storeId },
+            { store: storeId }
+        ],
+        isDeleted: { $ne: true },
+        isScrapped: { $ne: true }
+    };
+    if (params.assignedToolIds) {
+        const assignedIds = Array.isArray(params.assignedToolIds)
+            ? params.assignedToolIds
+            : String(params.assignedToolIds).split(',').map(s => s.trim()).filter(Boolean);
+        if (assignedIds.length > 0) {
+            storeMatchFilter._id = { $in: assignedIds.map(id => mongoose.Types.ObjectId.isValid(id) ? new mongoose.Types.ObjectId(id) : id) };
+        }
+    }
+
     const skip = (page - 1) * limit;
 
-    const [data, total] = await Promise.all([
+    const [data, total, statusAgg] = await Promise.all([
         Tool.find(query)
             .populate('project', 'name projectCode')
             .populate('currentSite', 'name location')
             .sort(sort)
             .skip(skip)
             .limit(parseInt(limit)),
-        Tool.countDocuments(query)
+        Tool.countDocuments(query),
+        Tool.aggregate([
+            { $match: storeMatchFilter },
+            {
+                $group: {
+                    _id: null,
+                    all: { $sum: 1 },
+                    available: { $sum: { $cond: [{ $eq: ['$status', 'Available'] }, 1, 0] } },
+                    moving: { $sum: { $cond: [{ $in: ['$status', ['Moving', 'In Transit']] }, 1, 0] } },
+                    repair: { $sum: { $cond: [{ $in: ['$status', ['Repair', 'Under Repair', 'Damaged/Repair']] }, 1, 0] } },
+                    printed: { $sum: { $cond: [{ $eq: ['$isPrinted', true] }, 1, 0] } },
+                    unprinted: { $sum: { $cond: [{ $ne: ['$isPrinted', true] }, 1, 0] } }
+                }
+            }
+        ])
     ]);
+
+    const statusCounts = statusAgg && statusAgg[0] ? {
+        all: statusAgg[0].all || 0,
+        available: statusAgg[0].available || 0,
+        moving: statusAgg[0].moving || 0,
+        repair: statusAgg[0].repair || 0,
+        printed: statusAgg[0].printed || 0,
+        unprinted: statusAgg[0].unprinted || 0
+    } : { all: total, available: 0, moving: 0, repair: 0, printed: 0, unprinted: 0 };
 
     return {
         data,
         total,
+        statusCounts,
         page: parseInt(page),
         limit: parseInt(limit),
         totalPages: Math.ceil(total / limit)
@@ -684,34 +789,58 @@ const bulkDeleteTools = async ({ toolIds, storeId, user }) => {
     const affectedProjectIds = new Set();
     const targetToolIds = [];
 
+    const deleteOps = [];
     for (const tool of toolsToDelete) {
         targetToolIds.push(tool.toolId || tool._id.toString());
-        if (!tool.originalSerialNumber) {
-            tool.originalSerialNumber = tool.serialNumber;
-        }
+        const originalSerial = tool.originalSerialNumber || tool.serialNumber;
 
         if (tool.isPrinted) {
             // Move printed tool to Scrap - DO NOT resequence
-            tool.isDeleted = true;
-            tool.isScrapped = true;
-            tool.status = 'Scrapped';
-            tool.scrappedAt = new Date();
-            tool.scrappedBy = userInfo;
+            deleteOps.push({
+                updateOne: {
+                    filter: { _id: tool._id },
+                    update: {
+                        $set: {
+                            originalSerialNumber: originalSerial,
+                            isDeleted: true,
+                            isScrapped: true,
+                            status: 'Scrapped',
+                            scrappedAt: new Date(),
+                            scrappedBy: userInfo
+                        }
+                    }
+                }
+            });
         } else {
             // Soft delete unprinted tool to Trash - WILL resequence
-            tool.isDeleted = true;
-            tool.isScrapped = false;
-            tool.status = 'Deleted';
-            tool.deletedAt = new Date();
-            tool.deletedBy = userInfo;
-            if (tool.toolId && !tool.toolId.startsWith('__TRASHED_')) {
-                tool.toolId = `__TRASHED_${tool._id}_${tool.toolId}`;
-            }
+            const trashedId = (tool.toolId && !tool.toolId.startsWith('__TRASHED_'))
+                ? `__TRASHED_${tool._id}_${tool.toolId}`
+                : tool.toolId;
+
+            deleteOps.push({
+                updateOne: {
+                    filter: { _id: tool._id },
+                    update: {
+                        $set: {
+                            originalSerialNumber: originalSerial,
+                            isDeleted: true,
+                            isScrapped: false,
+                            status: 'Deleted',
+                            deletedAt: new Date(),
+                            deletedBy: userInfo,
+                            toolId: trashedId
+                        }
+                    }
+                }
+            });
 
             if (tool.project) affectedProjectIds.add(tool.project.toString());
             else if (tool.currentSite) affectedProjectIds.add(tool.currentSite.toString());
         }
-        await tool.save();
+    }
+
+    if (deleteOps.length > 0) {
+        await Tool.bulkWrite(deleteOps, { ordered: false });
     }
 
     for (const projId of affectedProjectIds) {
@@ -807,6 +936,13 @@ const bulkScrapTools = async ({ toolIds, reason = '', user }) => {
     if (movingTools.length > 0) {
         const labels = movingTools.map(t => t.toolId || t._id).join(', ');
         throw new Error(`Cannot scrap tool(s) [${labels}] because they are currently in transit / moving`);
+    }
+
+    // Validation 4: Cannot scrap tools that are currently under Repair without inspection
+    const repairTools = tools.filter(t => (t.status || '').toLowerCase() === 'repair');
+    if (repairTools.length > 0) {
+        const labels = repairTools.map(t => t.toolId || t._id).join(', ');
+        throw new Error(`Tool(s) [${labels}] are currently under Repair. To move a tool under repair to scrap, complete the inspection workflow.`);
     }
 
     const userInfo = {
@@ -1052,27 +1188,42 @@ const bulkRestoreTools = async ({ toolIds, user }) => {
 
     const affectedProjectIds = new Set();
 
+    const restoreOps = [];
     for (const tool of toolsToRestore) {
         const wasUnprinted = !tool.isPrinted;
+        let restoredToolId = tool.toolId;
 
         // Use temporary toolId to guarantee no E11000 index collision during un-deletion
         if (wasUnprinted && tool.toolId && !tool.toolId.startsWith('__RESTORE_TEMP_')) {
-            tool.toolId = `__RESTORE_TEMP_${tool._id}_${Date.now()}`;
+            restoredToolId = `__RESTORE_TEMP_${tool._id}_${Date.now()}`;
         } else if (tool.toolId && tool.toolId.startsWith('__TRASHED_')) {
-            tool.toolId = tool.toolId.replace(/^__TRASHED_[^_]+_/, '');
+            restoredToolId = tool.toolId.replace(/^__TRASHED_[^_]+_/, '');
         }
 
-        tool.isDeleted = false;
-        tool.isScrapped = false;
-        tool.status = 'Available';
-        tool.deletedAt = null;
-        tool.deletedBy = null;
-        tool.scrappedAt = null;
-        tool.scrappedBy = null;
-        await tool.save();
+        restoreOps.push({
+            updateOne: {
+                filter: { _id: tool._id },
+                update: {
+                    $set: {
+                        toolId: restoredToolId,
+                        isDeleted: false,
+                        isScrapped: false,
+                        status: 'Available',
+                        deletedAt: null,
+                        deletedBy: null,
+                        scrappedAt: null,
+                        scrappedBy: null
+                    }
+                }
+            }
+        });
 
         if (tool.project) affectedProjectIds.add(tool.project.toString());
         else if (tool.currentSite) affectedProjectIds.add(tool.currentSite.toString());
+    }
+
+    if (restoreOps.length > 0) {
+        await Tool.bulkWrite(restoreOps, { ordered: false });
     }
 
     for (const projId of affectedProjectIds) {
@@ -1519,6 +1670,12 @@ const transferTools = async ({ sourceStoreId, destinationStoreId, toolIds, remar
         throw new Error(`Cannot transfer tools: Tool(s) [${unprintedLabels}] are not marked as Printed. All selected tools must be printed before performing an inter-store Transfer.`);
     }
 
+    const repairTools = toolsToTransfer.filter(t => (t.status || '').toLowerCase() === 'repair');
+    if (repairTools.length > 0) {
+        const labels = repairTools.map(t => t.toolId || t.toolCode || t.description || t._id.toString()).join(', ');
+        throw new Error(`Cannot transfer tools: Tool(s) [${labels}] are currently under Repair and cannot be transferred.`);
+    }
+
     const { createStoreTransferChallan } = await import('./challan.service.js');
     const transferChallan = await createStoreTransferChallan({
         sourceStore: {
@@ -1629,27 +1786,313 @@ const transferTools = async ({ sourceStoreId, destinationStoreId, toolIds, remar
     };
 };
 
+const parseFlexibleDateHelper = (raw) => {
+    if (!raw) return null;
+    if (raw instanceof Date && !isNaN(raw.getTime())) return raw;
+    const str = String(raw).trim();
+    if (!str || str === 'N/A' || str === '-') return null;
+
+    if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
+        const parsed = new Date(str);
+        if (!isNaN(parsed.getTime())) return parsed;
+    }
+
+    const parts = str.split(/[\/\-\.]/);
+    if (parts.length === 3) {
+        let p0 = parseInt(parts[0], 10);
+        let p1 = parseInt(parts[1], 10);
+        let p2 = parseInt(parts[2], 10);
+        if (!isNaN(p0) && !isNaN(p1) && !isNaN(p2)) {
+            if (p0 >= 1970 && p0 <= 2100) {
+                const d = new Date(p0, p1 - 1, p2);
+                if (!isNaN(d.getTime())) return d;
+            }
+            if (p2 >= 1970 && p2 <= 2100) {
+                if (p0 > 12) {
+                    const d = new Date(p2, p1 - 1, p0);
+                    if (!isNaN(d.getTime())) return d;
+                }
+                const d = new Date(p2, p1 - 1, p0);
+                if (!isNaN(d.getTime())) return d;
+            }
+        }
+    }
+
+    const fallback = new Date(str);
+    if (!isNaN(fallback.getTime())) return fallback;
+    return null;
+};
+
+const inspectTools = async ({ toolIds, result, action, validation, remarks = '', user }) => {
+    if (!Array.isArray(toolIds) || toolIds.length === 0) {
+        throw new Error('Please select at least one tool to inspect');
+    }
+
+    if (!['Pass', 'Fail'].includes(result)) {
+        throw new Error("Inspection result must be either 'Pass' or 'Fail'");
+    }
+
+    if (result === 'Pass') {
+        if (!validation || typeof validation !== 'string' || !validation.trim()) {
+            throw new Error('Validation period is required when marking inspection as Pass');
+        }
+    } else {
+        if (!['Repair', 'Scrap'].includes(action)) {
+            throw new Error("Action for failed inspection must be either 'Repair' or 'Scrap'");
+        }
+    }
+
+    const tools = await Tool.find({ _id: { $in: toolIds } });
+    if (!tools || tools.length === 0) {
+        throw new Error('No tools found for the selected IDs');
+    }
+
+    // Validation 1: Cannot inspect tools that are already scrapped or disposed
+    const scrappedOrDisposed = tools.filter(t => t.isScrapped || t.isDisposed);
+    if (scrappedOrDisposed.length > 0) {
+        const labels = scrappedOrDisposed.map(t => t.toolId || t._id).join(', ');
+        throw new Error(`Tool(s) [${labels}] are already marked as Scrapped or Disposed and cannot be inspected`);
+    }
+
+    // Validation 2: Cannot inspect tools in transit / moving
+    const movingTools = tools.filter(t => ['moving', 'in transit', 'transit'].includes((t.status || '').toLowerCase()));
+    if (movingTools.length > 0) {
+        const labels = movingTools.map(t => t.toolId || t._id).join(', ');
+        throw new Error(`Tool(s) [${labels}] are currently in transit / moving and cannot be inspected`);
+    }
+
+    // Validation 3: Cannot inspect tools already in Repair
+    const repairTools = tools.filter(t => (t.status || '').toLowerCase() === 'repair');
+    if (repairTools.length > 0) {
+        const labels = repairTools.map(t => t.toolId || t._id).join(', ');
+        throw new Error(`Tool(s) [${labels}] are currently under Repair and cannot undergo inspection until repair is resolved`);
+    }
+
+    const userInfo = {
+        _id: user?._id || null,
+        name: user?.name || user?.username || 'Quality Inspector',
+        email: user?.email || 'quality@landt.com'
+    };
+
+    const targetToolIds = [];
+    const now = new Date();
+
+    if (result === 'Pass') {
+        const cleanValidation = validation.trim();
+        const yearsMatch = cleanValidation.match(/(\d+)/);
+        const years = yearsMatch ? parseInt(yearsMatch[1], 10) : 1;
+
+        for (const tool of tools) {
+            targetToolIds.push(tool.toolId || tool._id.toString());
+
+            // 1. Resolve start date (validationStartDate -> dateOfSupply -> createdAt -> now)
+            let startDate = parseFlexibleDateHelper(
+                tool.validationStartDate ||
+                (tool.customFields?.get ? tool.customFields.get('validationStartDate') : tool.customFields?.validationStartDate) ||
+                tool.dateOfSupply ||
+                (tool.customFields?.get ? tool.customFields.get('dateOfSupply') : tool.customFields?.dateOfSupply) ||
+                tool.createdAt ||
+                now
+            );
+            if (!startDate) startDate = now;
+
+            const computedExpiry = new Date(startDate);
+            computedExpiry.setFullYear(computedExpiry.getFullYear() + years);
+
+            tool.validityPeriod = cleanValidation;
+            if (!tool.customFields) tool.customFields = new Map();
+            if (tool.customFields.set) {
+                tool.customFields.set('validation', cleanValidation);
+                tool.customFields.set('validityPeriod', cleanValidation);
+            }
+
+            tool.lastInspectionDate = now;
+            tool.nextInspectionDueDate = computedExpiry;
+            tool.inspectionStatus = 'Pass';
+            tool.inspectionResult = 'Pass';
+            tool.inspectionAction = 'Pass';
+            tool.inspectedBy = userInfo;
+            tool.inspectedAt = now;
+            tool.status = 'Available';
+
+            if (!tool.inspectionHistory) tool.inspectionHistory = [];
+            tool.inspectionHistory.push({
+                result: 'Pass',
+                action: 'Pass',
+                validation: cleanValidation,
+                expiryDate: computedExpiry,
+                inspectedBy: userInfo,
+                inspectedAt: now,
+                notes: remarks.trim()
+            });
+
+            await tool.save();
+        }
+
+        const auditLog = new ToolAuditLog({
+            user: userInfo,
+            dateTime: now,
+            action: 'Tool Inspection - Pass',
+            store: tools[0]?.currentSite || tools[0]?.store,
+            affectedToolsCount: tools.length,
+            toolIds: targetToolIds,
+            remarks: `Inspection Pass for ${tools.length} tool(s). Validation set to ${cleanValidation}${remarks ? ` - Notes: ${remarks.trim()}` : ''}`
+        });
+        await auditLog.save();
+
+        return {
+            count: tools.length,
+            result: 'Pass',
+            action: 'Pass',
+            validation: cleanValidation,
+            message: `${tools.length} tool(s) marked as Inspection Pass with ${cleanValidation} validation period`
+        };
+    } else {
+        // Fail: Repair or Scrap
+        if (action === 'Repair') {
+            for (const tool of tools) {
+                targetToolIds.push(tool.toolId || tool._id.toString());
+                tool.status = 'Repair';
+                tool.inspectionStatus = 'Fail';
+                tool.inspectionResult = 'Fail';
+                tool.inspectionAction = 'Repair';
+                tool.lastInspectionDate = now;
+                tool.inspectedBy = userInfo;
+                tool.inspectedAt = now;
+
+                if (!tool.inspectionHistory) tool.inspectionHistory = [];
+                tool.inspectionHistory.push({
+                    result: 'Fail',
+                    action: 'Repair',
+                    validation: tool.validityPeriod,
+                    expiryDate: tool.nextInspectionDueDate,
+                    inspectedBy: userInfo,
+                    inspectedAt: now,
+                    notes: remarks.trim() || 'Defect detected - Sent to Repair'
+                });
+
+                await tool.save();
+            }
+
+            const auditLog = new ToolAuditLog({
+                user: userInfo,
+                dateTime: now,
+                action: 'Tool Inspection - Fail (Repair)',
+                store: tools[0]?.currentSite || tools[0]?.store,
+                affectedToolsCount: tools.length,
+                toolIds: targetToolIds,
+                remarks: remarks ? `Inspection Fail: Sent to Repair - ${remarks.trim()}` : `Inspection Fail: Sent to Repair`
+            });
+            await auditLog.save();
+
+            return {
+                count: tools.length,
+                result: 'Fail',
+                action: 'Repair',
+                message: `${tools.length} tool(s) marked as Fail and routed to Repair. Operations restricted.`
+            };
+        } else {
+            // action === 'Scrap'
+            for (const tool of tools) {
+                targetToolIds.push(tool.toolId || tool._id.toString());
+                tool.status = 'Scrapped';
+                tool.isScrapped = true;
+                tool.isDisposed = false;
+                tool.scrappedAt = now;
+                tool.scrappedBy = userInfo;
+                tool.scrapReason = remarks.trim() || 'Failed Inspection - Moved to Scrap';
+                tool.inspectionStatus = 'Fail';
+                tool.inspectionResult = 'Fail';
+                tool.inspectionAction = 'Scrap';
+                tool.lastInspectionDate = now;
+                tool.inspectedBy = userInfo;
+                tool.inspectedAt = now;
+
+                if (!tool.inspectionHistory) tool.inspectionHistory = [];
+                tool.inspectionHistory.push({
+                    result: 'Fail',
+                    action: 'Scrap',
+                    validation: tool.validityPeriod,
+                    expiryDate: tool.nextInspectionDueDate,
+                    inspectedBy: userInfo,
+                    inspectedAt: now,
+                    notes: remarks.trim() || 'Failed Inspection - Moved to Scrap'
+                });
+
+                await tool.save();
+            }
+
+            const auditLog = new ToolAuditLog({
+                user: userInfo,
+                dateTime: now,
+                action: 'Tool Inspection - Fail (Scrap)',
+                store: tools[0]?.currentSite || tools[0]?.store,
+                affectedToolsCount: tools.length,
+                toolIds: targetToolIds,
+                remarks: remarks ? `Inspection Fail: Moved to Scrap - ${remarks.trim()}` : `Inspection Fail: Moved to Scrap`
+            });
+            await auditLog.save();
+
+            return {
+                count: tools.length,
+                result: 'Fail',
+                action: 'Scrap',
+                message: `${tools.length} tool(s) marked as Fail and moved directly to Scrap page`
+            };
+        }
+    }
+};
+
+/**
+ * [APP] getToolsByIds - Batch query tools by array of tool ObjectIds
+ * Exclusively consumed by Mobile App (larsentoubro-app/src/features/tools/services/toolService.ts).
+ */
+const getToolsByIds = async (toolIds) => {
+    if (!Array.isArray(toolIds) || toolIds.length === 0) {
+        return [];
+    }
+    return Tool.find({
+        _id: { $in: toolIds },
+        isDeleted: { $ne: true }
+    })
+    .populate('project', 'name projectCode')
+    .populate('currentSite', 'name location storeCode')
+    .lean();
+};
+
 export const toolService = {
+    // [SHARED] Store Inventory & Listing
     getToolsByStoreId,
     createToolInStore,
+    getToolById,
+    getToolFilterOptions,
+
+    // [APP] Mobile Batch Selection
+    getToolsByIds,
+
+    // [WEB] Web Excel Export
+    exportToolsByStoreId,
+
+    // [SHARED] Tool Lifecycle & Trash Operations
     updateToolById,
     deleteToolById,
     bulkDeleteTools,
     getDeletedTools,
-    getScrappedTools,
-    markToolsAsPrinted,
-    unmarkToolsAsPrinted,
     restoreToolById,
     bulkRestoreTools,
     permanentDeleteToolById,
     bulkPermanentDeleteTools,
-    exportToolsByStoreId,
-    getToolById,
-    getToolFilterOptions,
+
+    // [SHARED] Scrap, Print Status, Transfer & Inspection
+    getScrappedTools,
+    bulkScrapTools,
+    markToolsAsPrinted,
+    unmarkToolsAsPrinted,
     bulkEditTools,
     transferTools,
-    syncToolIdReferences,
-    bulkScrapTools
+    inspectTools,
+    syncToolIdReferences
 };
+
 
 

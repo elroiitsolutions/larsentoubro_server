@@ -1,5 +1,14 @@
 import * as profileService from './profile.service.js';
 
+/**
+ * [WEB] Vendor Service
+ * Business logic and database operations for Vendor / Subcontractor profiles.
+ * Exclusively consumed by Web Application (client/src/services/vendor.service.ts).
+ */
+
+/**
+ * [WEB] getVendors - Query vendor profiles with search, filter, and pagination
+ */
 export const getVendors = async (params = {}) => {
     const result = await profileService.getProfiles({
         ...params,

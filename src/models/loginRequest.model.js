@@ -14,6 +14,12 @@ const loginRequestSchema = new mongoose.Schema({
         type: String,
         required: true
     },
+    parentUser: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        default: null,
+        index: true
+    },
     status: {
         type: String,
         enum: ['PENDING', 'APPROVED', 'REJECTED', 'EXPIRED'],
@@ -51,3 +57,4 @@ loginRequestSchema.index({ user: 1, status: 1 });
 loginRequestSchema.index({ status: 1, requestedAt: -1 });
 
 export const LoginRequest = mongoose.model('LoginRequest', loginRequestSchema);
+export default LoginRequest;

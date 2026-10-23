@@ -1,6 +1,16 @@
 import { Profile } from '../models/profile.model.js';
 import mongoose from 'mongoose';
 
+/**
+ * [SHARED] & [WEB] Profile Directory Service
+ * Central enterprise directory for Subcontractors, Vendors, Manufacturers, Clients, and Staff.
+ * - [SHARED]: getProfiles, getProfileById, createProfile, updateProfile, deleteProfile, updateProfileMetrics.
+ * - [WEB]: addDocument, deleteDocument (Web profile document management).
+ */
+
+/**
+ * [SHARED] getProfiles - Query profiles with role, status, and text search
+ */
 export const getProfiles = async (params = {}, user = null) => {
     const { profileType, page = 1, limit = 50, search = '', status = 'All' } = params;
 
@@ -174,6 +184,10 @@ export const deleteProfile = async (id, user = null) => {
     return profile;
 };
 
+/**
+ * [WEB] addDocument - Attach a file document record to profile
+ * Exclusively consumed by Web profile management UI.
+ */
 export const addDocument = async (profileId, docData) => {
     const profile = await Profile.findById(profileId);
     if (!profile) {
@@ -184,6 +198,10 @@ export const addDocument = async (profileId, docData) => {
     return profile;
 };
 
+/**
+ * [WEB] deleteDocument - Remove an attached file document record from profile
+ * Exclusively consumed by Web profile management UI.
+ */
 export const deleteDocument = async (profileId, docId) => {
     const profile = await Profile.findById(profileId);
     if (!profile) {
@@ -194,6 +212,10 @@ export const deleteDocument = async (profileId, docId) => {
     return profile;
 };
 
+/**
+ * [SHARED] updateProfileMetrics - Increment or decrement profile lifecycle counters (DC, RC, scrap, missing)
+ * Used across Delivery and Return Challan workflows in both Web and Mobile.
+ */
 export const updateProfileMetrics = async (profileId, deltas = {}, session = null) => {
     if (!profileId) return;
     const { dcDelta = 0, rcDelta = 0, returnedDelta = 0, missingDelta = 0, scrapDelta = 0, supplyDelta = 0 } = deltas;

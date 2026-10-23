@@ -4,6 +4,12 @@ import { env } from '../config/env.js';
 import { User } from '../models/user.model.js';
 import { Vendor } from '../models/vendor.model.js';
 
+/**
+ * [SHARED] Authentication & RBAC Middleware
+ * Enforces unified JWT verification, role-based access control, guest limits,
+ * subuser hierarchy scopes, and inspection privileges for both Web and Mobile.
+ */
+
 const getGuestUser = (decoded = {}) => ({
     _id: decoded.id || 'guest_user_id',
     id: decoded.id || 'guest_user_id',
@@ -13,6 +19,46 @@ const getGuestUser = (decoded = {}) => ({
     user_id: 'GUEST-001',
     allowedPages: ['/qr-scanner']
 });
+
+const enforceSubuserHierarchy = async (user) => {
+    if (!user || user.role !== 'Subuser' || !user.parentUser) {
+        return user;
+    }
+    try {
+        const parent = await User.findById(user.parentUser)
+            .populate('projects', 'name code location')
+            .populate('stores', 'name code siteName')
+            .select('-password');
+
+        if (!parent) {
+            user.allowedPages = [];
+            user.projects = [];
+            user.stores = [];
+            user.hasInspectionAccess = false;
+            user.canCreateUser = false;
+            return user;
+        }
+
+        const parentAllowedPages = parent.role === 'Admin'
+            ? ['/qr-scanner', '/dashboard', '/projects', '/stores', '/tools', '/users', '/settings', '/challans', '/profiles']
+            : (parent.allowedPages || []);
+        user.allowedPages = (user.allowedPages || []).filter(p => parentAllowedPages.includes(p));
+
+        if (parent.role !== 'Admin') {
+            const parentProjIds = (parent.projects || []).map(p => String(p._id || p));
+            user.projects = (user.projects || []).filter(p => parentProjIds.includes(String(p._id || p)));
+
+            const parentStoreIds = (parent.stores || []).map(s => String(s._id || s));
+            user.stores = (user.stores || []).filter(s => parentStoreIds.includes(String(s._id || s)));
+
+            user.hasInspectionAccess = Boolean(user.hasInspectionAccess && parent.hasInspectionAccess);
+        }
+        user.canCreateUser = false;
+    } catch (e) {
+        // Fallback safely
+    }
+    return user;
+};
 
 export const attachUser = async (req, res, next) => {
     try {
@@ -37,6 +83,9 @@ export const attachUser = async (req, res, next) => {
                     .populate('projects', 'name code location')
                     .populate('stores', 'name code siteName')
                     .select('-password');
+                if (user && user.role === 'Subuser') {
+                    await enforceSubuserHierarchy(user);
+                }
             }
 
             if (!user && (decoded.role === 'Vendor' || decoded.isVendor) && mongoose.Types.ObjectId.isValid(decoded.id)) {
@@ -124,6 +173,9 @@ export const authenticate = async (req, res, next) => {
                 .populate('projects', 'name code location')
                 .populate('stores', 'name code siteName')
                 .select('-password');
+            if (user && user.role === 'Subuser') {
+                await enforceSubuserHierarchy(user);
+            }
         }
 
         if (!user && (decoded.role === 'Vendor' || decoded.isVendor) && mongoose.Types.ObjectId.isValid(decoded.id)) {
@@ -189,6 +241,19 @@ export const requireAdmin = (req, res, next) => {
     next();
 };
 
+export const requireCreateUserPermission = (req, res, next) => {
+    if (!req.user) {
+        return res.status(401).json({ success: false, message: 'Authentication required' });
+    }
+    if (req.user.role === 'Admin' || req.user.canCreateUser) {
+        return next();
+    }
+    return res.status(403).json({
+        success: false,
+        message: 'Access denied. You do not have permission to create or manage users.'
+    });
+};
+
 export const restrictGuestAccess = (req, res, next) => {
     if (req.user && req.user.role === 'Guest') {
         const allowedPaths = [
@@ -246,6 +311,39 @@ export const requirePagePermission = (pagePrefix) => {
             return res.status(403).json({
                 success: false,
                 message: `Access denied. You do not have permission to view or interact with ${pagePrefix}.`
+            });
+        }
+        next();
+    };
+};
+
+export const requireInspectionPermission = (req, res, next) => {
+    if (!req.user) {
+        return res.status(401).json({ success: false, message: 'Authentication required' });
+    }
+    if (req.user.role === 'Admin' || req.user.hasInspectionAccess) {
+        return next();
+    }
+    return res.status(403).json({
+        success: false,
+        message: 'Access denied: You do not have permission to perform tool inspections. Inspection access is required.'
+    });
+};
+
+export const restrictInspectionUser = (actionName = 'perform this action') => {
+    return (req, res, next) => {
+        if (!req.user) {
+            return res.status(401).json({ success: false, message: 'Authentication required' });
+        }
+        // Admins are never restricted
+        if (req.user.role === 'Admin') {
+            return next();
+        }
+        // Users with Inspection access are restricted from non-inspection operational actions
+        if (req.user.hasInspectionAccess) {
+            return res.status(403).json({
+                success: false,
+                message: `Access denied: Users with Inspection access are restricted from ${actionName}.`
             });
         }
         next();

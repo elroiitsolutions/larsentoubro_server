@@ -2,13 +2,19 @@ import { Tool } from '../models/tool.model.js';
 import { ImportJob } from '../models/importJob.model.js';
 import ToolIdGenerator from '../utils/tool-id.js';
 
-const BATCH_SIZE = 2000;
+/**
+ * [SHARED] & [WEB] Bulk Import Background Worker Service
+ * - [SHARED]: processImportJob handles background batch database insertions for both Web and Mobile.
+ * - [WEB]: addJobListener, removeJobListener, emitProgress handle SSE streaming for Web import wizard.
+ */
+
+const BATCH_SIZE = 1000;
 
 // In-memory event emitter for SSE progress streams
 const jobListeners = new Map();
 
 /**
- * Register an SSE response stream for a job ID.
+ * [WEB] Register an SSE response stream for a job ID
  */
 export const addJobListener = (jobId, res) => {
     if (!jobListeners.has(jobId)) {
@@ -48,8 +54,8 @@ const emitProgress = (jobId, data) => {
 };
 
 /**
- * Process a committed import job in background batches.
- * This runs AFTER the HTTP response has been sent to the client.
+ * [SHARED] processImportJob - Process a committed import job in background batches
+ * This runs asynchronously after commit, executing bulk inserts for Web or Mobile imports.
  * 
  * @param {string} jobId - The ImportJob document ID
  * @param {object} targetStore - Populated store document with project
