@@ -716,20 +716,28 @@ export const createScrapDeliveryChallan = async (data, user = {}) => {
 
         let projectSnapshot = null;
         if (toolsToCheck.length > 0 && toolsToCheck[0].project) {
-            const projDoc = await Project.findById(toolsToCheck[0].project).lean();
-            if (projDoc) {
-                projectSnapshot = {
-                    _id: projDoc._id,
-                    name: projDoc.name || '',
-                    projectCode: projDoc.projectCode || ''
-                };
+            const rawProjId = toolsToCheck[0].project?._id || toolsToCheck[0].project;
+            if (rawProjId && mongoose.Types.ObjectId.isValid(String(rawProjId))) {
+                const projDoc = await Project.findById(rawProjId).lean();
+                if (projDoc) {
+                    projectSnapshot = {
+                        _id: projDoc._id,
+                        name: projDoc.name || '',
+                        projectCode: projDoc.projectCode || ''
+                    };
+                }
             }
         }
 
         let sourceStoreSnapshot = null;
-        const targetStoreId = storeId || (toolsToCheck.length > 0 ? (toolsToCheck[0].currentSite || toolsToCheck[0].store) : null);
-        if (targetStoreId) {
-            const storeDoc = await Store.findById(targetStoreId).lean();
+        const rawStoreId = (storeId && storeId !== 'undefined' && storeId !== 'null') 
+            ? storeId 
+            : (toolsToCheck.length > 0 ? (toolsToCheck[0].currentSite?._id || toolsToCheck[0].currentSite || toolsToCheck[0].store?._id || toolsToCheck[0].store) : null);
+        const validStoreId = (rawStoreId && mongoose.Types.ObjectId.isValid(String(rawStoreId))) 
+            ? String(rawStoreId) 
+            : null;
+        if (validStoreId) {
+            const storeDoc = await Store.findById(validStoreId).lean();
             if (storeDoc) {
                 sourceStoreSnapshot = {
                     _id: storeDoc._id,
@@ -770,7 +778,7 @@ export const createScrapDeliveryChallan = async (data, user = {}) => {
             mrnNo,
             receiptDate,
             vendor: scrapDealerSnapshot,
-            store: targetStoreId || null,
+            store: validStoreId || null,
             challanDate: challanDate ? new Date(challanDate) : new Date(),
             deliveryDate: deliveryDate ? new Date(deliveryDate) : new Date(),
             remarks: remarks || `Scrap Transfer to ${scrapDealerSnapshot.name}`,
