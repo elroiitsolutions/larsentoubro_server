@@ -2053,7 +2053,10 @@ const getToolsByIds = async (toolIds) => {
     }
     return Tool.find({
         _id: { $in: toolIds },
-        isDeleted: { $ne: true }
+        $or: [
+            { isDeleted: { $ne: true } },
+            { isScrapped: true }
+        ]
     })
     .populate('project', 'name projectCode')
     .populate('currentSite', 'name location storeCode')
