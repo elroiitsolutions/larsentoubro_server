@@ -56,6 +56,8 @@ const getStores = async (projectId, assignedStoreIds = null, assignedToolIds = n
             }
             const count = await Tool.countDocuments(toolQuery);
             obj.toolsCount = count;
+            obj.totalToolsCount = count;
+            obj.availableToolsCount = count;
             return obj;
         })
     );
@@ -83,6 +85,8 @@ const getStoreById = async (id, assignedToolIds = null) => {
     }
     const count = await Tool.countDocuments(toolQuery);
     obj.toolsCount = count;
+    obj.totalToolsCount = count;
+    obj.availableToolsCount = count;
     return obj;
 };
 
