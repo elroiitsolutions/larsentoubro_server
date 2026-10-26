@@ -94,6 +94,15 @@ const toolSchema = new mongoose.Schema({
 // Tool ID is unique per Project
 toolSchema.index({ project: 1, toolId: 1 }, { unique: true });
 
+// Highly optimized compound indexes for Store inventory lookups, pagination, sorting & status counts
+toolSchema.index({ currentSite: 1, isDeleted: 1, isScrapped: 1, serialNumber: 1 });
+toolSchema.index({ currentSite: 1, isDeleted: 1, isScrapped: 1, createdAt: -1 });
+toolSchema.index({ currentSite: 1, isDeleted: 1, isScrapped: 1, status: 1 });
+toolSchema.index({ currentSite: 1, isDeleted: 1, isScrapped: 1, isPrinted: 1 });
+toolSchema.index({ currentSite: 1, isDeleted: 1, isScrapped: 1, toolType: 1 });
+toolSchema.index({ toolCode: 1 });
+toolSchema.index({ currentSite: 1, toolId: 1 });
+
 // Pre-save hook to generate toolId if it doesn't exist and ensure numeric serialNumber is set
 toolSchema.pre('save', async function (next) {
     if (this.isNew && !this.toolId) {

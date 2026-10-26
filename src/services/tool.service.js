@@ -17,6 +17,41 @@ import * as XLSX from 'xlsx';
  * - [APP]: getToolsByIds (Batch tool IDs lookup).
  */
 
+// High-performance In-Memory Caches for store status counts and filter options
+const statusCountsCache = new Map();
+const filterOptionsCache = new Map();
+
+export const invalidateStoreStatusCache = (storeId) => {
+    if (!storeId) {
+        statusCountsCache.clear();
+        filterOptionsCache.clear();
+        return;
+    }
+    const idStr = storeId.toString();
+    statusCountsCache.delete(idStr);
+    filterOptionsCache.delete(idStr);
+};
+
+// Non-blocking throttled background reconciliation
+let lastReconcileTime = 0;
+const RECONCILE_THROTTLE_MS = 15 * 60 * 1000; // 15 minutes throttle
+
+const triggerBackgroundReconciliation = () => {
+    const now = Date.now();
+    if (now - lastReconcileTime < RECONCILE_THROTTLE_MS) return;
+    lastReconcileTime = now;
+    // Asynchronous non-blocking background task
+    setImmediate(async () => {
+        try {
+            const { reconcileReturnedToolStatuses, reconcileOrphanedMovingToolStatuses } = await import('./challan.service.js');
+            if (typeof reconcileReturnedToolStatuses === 'function') await reconcileReturnedToolStatuses();
+            if (typeof reconcileOrphanedMovingToolStatuses === 'function') await reconcileOrphanedMovingToolStatuses();
+        } catch (e) {
+            // Silently ignore background reconciliation errors
+        }
+    });
+};
+
 const buildTokenCondition = (tok) => {
     const cleanTok = String(tok || '').trim();
     if (!cleanTok) return [];
@@ -37,11 +72,11 @@ const buildTokenCondition = (tok) => {
         conds.push({ toolId: { $regex: `${escaped}$`, $options: 'i' } });
         // Exact match only for numeric toolCode (e.g. SAP material number "347470283")
         conds.push({ toolCode: { $regex: `^${escaped}$`, $options: 'i' } });
+        // Match description with number
+        conds.push({ description: { $regex: escaped, $options: 'i' } });
     } else {
-        // Alphanumeric code or text description
-        conds.push({ toolId: { $regex: `${escaped}$`, $options: 'i' } });
+        // Alphanumeric code or text description (single regex per field, no redundant evaluations)
         conds.push({ toolId: { $regex: escaped, $options: 'i' } });
-        conds.push({ toolCode: { $regex: `^${escaped}$`, $options: 'i' } });
         conds.push({ toolCode: { $regex: `^${escaped}`, $options: 'i' } });
         conds.push({ description: { $regex: escaped, $options: 'i' } });
         conds.push({ toolType: { $regex: escaped, $options: 'i' } });
@@ -340,10 +375,17 @@ export const resequenceProjectToolSerials = async (projectId) => {
 
 const getToolsByStoreId = async (storeId, params = {}) => {
     const { page = 1, limit = 10, sortBy = 'serialNumber', sortOrder = 'asc' } = params;
+
+    const isObjId = mongoose.Types.ObjectId.isValid(storeId);
+    const storeObjId = isObjId ? new mongoose.Types.ObjectId(storeId) : storeId;
+    const storeKey = storeId ? storeId.toString() : '';
+
     const query = {
         $or: [
-            { currentSite: storeId },
-            { store: storeId }
+            { currentSite: storeObjId },
+            ...(isObjId ? [{ currentSite: storeId.toString() }] : []),
+            { store: storeObjId },
+            ...(isObjId ? [{ store: storeId.toString() }] : [])
         ],
         isDeleted: { $ne: true },
         isScrapped: { $ne: true }
@@ -354,38 +396,14 @@ const getToolsByStoreId = async (storeId, params = {}) => {
             ? params.assignedToolIds
             : String(params.assignedToolIds).split(',').map(s => s.trim()).filter(Boolean);
         if (assignedIds.length > 0) {
-            query._id = { $in: assignedIds };
+            query._id = { $in: assignedIds.map(id => mongoose.Types.ObjectId.isValid(id) ? new mongoose.Types.ObjectId(id) : id) };
         }
     }
 
     applyAdvancedFilters(query, params);
 
-    // Self-healing reconciliation: Reconcile returned and orphaned tool statuses
-    try {
-        const { reconcileReturnedToolStatuses, reconcileOrphanedMovingToolStatuses } = await import('./challan.service.js');
-        if (typeof reconcileReturnedToolStatuses === 'function') {
-            await reconcileReturnedToolStatuses();
-        }
-        if (typeof reconcileOrphanedMovingToolStatuses === 'function') {
-            await reconcileOrphanedMovingToolStatuses();
-        }
-    } catch (e) {
-        // Silently continue
-    }
-
-    // Self-healing backfill for any legacy records missing numeric serialNumber
-    try {
-        const unindexed = await Tool.find({ toolId: { $exists: true }, $or: [{ serialNumber: { $exists: false } }, { serialNumber: null }] }).limit(50);
-        for (const t of unindexed) {
-            const match = t.toolId ? t.toolId.match(/\d+$/) : null;
-            if (match) {
-                t.serialNumber = parseInt(match[0], 10);
-                await t.save();
-            }
-        }
-    } catch (e) {
-        // Silently ignore backfill errors
-    }
+    // Non-blocking background reconciliation (never halts interactive search/refresh request)
+    triggerBackgroundReconciliation();
 
     const sort = {};
     if (sortBy === 'toolId' || sortBy === 'serialNumber') {
@@ -408,13 +426,12 @@ const getToolsByStoreId = async (storeId, params = {}) => {
         };
     }
 
-    const storeObjId = mongoose.Types.ObjectId.isValid(storeId) ? new mongoose.Types.ObjectId(storeId) : storeId;
     const storeMatchFilter = {
         $or: [
             { currentSite: storeObjId },
+            ...(isObjId ? [{ currentSite: storeId.toString() }] : []),
             { store: storeObjId },
-            { currentSite: storeId },
-            { store: storeId }
+            ...(isObjId ? [{ store: storeId.toString() }] : [])
         ],
         isDeleted: { $ne: true },
         isScrapped: { $ne: true }
@@ -430,15 +447,20 @@ const getToolsByStoreId = async (storeId, params = {}) => {
 
     const skip = (page - 1) * limit;
 
-    const [data, total, statusAgg] = await Promise.all([
-        Tool.find(query)
-            .populate('project', 'name projectCode')
-            .populate('currentSite', 'name location')
-            .sort(sort)
-            .skip(skip)
-            .limit(parseInt(limit)),
-        Tool.countDocuments(query),
-        Tool.aggregate([
+    // Check if statusCounts can be served from in-memory cache or if search/filter is active
+    const cachedStatus = statusCountsCache.get(storeKey);
+    const hasSearchOrFilters = Boolean(
+        (params.search && String(params.search).trim()) ||
+        (params.category && params.category !== 'All') ||
+        (params.status && params.status !== 'All') ||
+        (params.printStatus && params.printStatus !== 'All')
+    );
+
+    let statusCountsPromise;
+    if (cachedStatus && (cachedStatus.expiresAt > Date.now() || hasSearchOrFilters)) {
+        statusCountsPromise = Promise.resolve([cachedStatus.counts]);
+    } else {
+        statusCountsPromise = Tool.aggregate([
             { $match: storeMatchFilter },
             {
                 $group: {
@@ -451,7 +473,33 @@ const getToolsByStoreId = async (storeId, params = {}) => {
                     unprinted: { $sum: { $cond: [{ $ne: ['$isPrinted', true] }, 1, 0] } }
                 }
             }
-        ])
+        ]).then(res => {
+            if (res && res[0]) {
+                const counts = {
+                    all: res[0].all || 0,
+                    available: res[0].available || 0,
+                    moving: res[0].moving || 0,
+                    repair: res[0].repair || 0,
+                    printed: res[0].printed || 0,
+                    unprinted: res[0].unprinted || 0
+                };
+                statusCountsCache.set(storeKey, { counts, expiresAt: Date.now() + 60 * 1000 });
+                return [counts];
+            }
+            return res;
+        });
+    }
+
+    const [data, total, statusAgg] = await Promise.all([
+        Tool.find(query)
+            .populate('project', 'name projectCode')
+            .populate('currentSite', 'name location')
+            .sort(sort)
+            .skip(skip)
+            .limit(parseInt(limit))
+            .lean(),
+        Tool.countDocuments(query),
+        statusCountsPromise
     ]);
 
     const statusCounts = statusAgg && statusAgg[0] ? {
@@ -520,6 +568,7 @@ const createToolInStore = async (toolData) => {
     }
     const tool = new Tool(data);
     await tool.save();
+    invalidateStoreStatusCache(tool.currentSite);
     return tool;
 };
 
@@ -683,6 +732,7 @@ const updateToolById = async (id, toolData) => {
         await syncToolIdReferences(tool._id, oldToolId, newToolId);
     }
 
+    invalidateStoreStatusCache(tool.currentSite);
     return tool;
 };
 
@@ -753,6 +803,7 @@ const deleteToolById = async (id, user = {}) => {
         });
         await auditLog.save();
 
+        invalidateStoreStatusCache(tool.currentSite);
         return tool;
     }
 };
@@ -858,6 +909,7 @@ const bulkDeleteTools = async ({ toolIds, storeId, user }) => {
     });
     await auditLog.save();
 
+    invalidateStoreStatusCache(storeId);
     return { count: toolsToDelete.length, auditLogId: auditLog._id };
 };
 
@@ -1069,6 +1121,7 @@ const markToolsAsPrinted = async ({ toolIds, user }) => {
     });
     await auditLog.save();
 
+    invalidateStoreStatusCache();
     return { count: result.modifiedCount };
 };
 
@@ -1104,6 +1157,7 @@ const unmarkToolsAsPrinted = async ({ toolIds, user }) => {
     });
     await auditLog.save();
 
+    invalidateStoreStatusCache();
     return { count: result.modifiedCount };
 };
 
@@ -1472,21 +1526,34 @@ const getToolById = async (id, storeId = null, projectId = null) => {
 };
 
 const getToolFilterOptions = async (storeId) => {
-    const fields = [
-        'toolId', 'toolCode', 'description', 'toolType', 'status', 'toolVariant',
-        'makeYear', 'capacity', 'safeWorkingLoad', 'metalType',
-        'purchaserName', 'purchaserContact', 'supplierCode',
-        'dateOfSupply', 'validityPeriod', 'jobCode', 'remarks'
-    ];
-    const options = {};
+    const storeKey = storeId ? storeId.toString() : '';
+    const now = Date.now();
+    const cached = filterOptionsCache.get(storeKey);
+    if (cached && cached.expiresAt > now) {
+        return cached.options;
+    }
+
+    const isObjId = mongoose.Types.ObjectId.isValid(storeId);
+    const storeObj = isObjId ? new mongoose.Types.ObjectId(storeId) : storeId;
     const storeQuery = {
         $or: [
-            { currentSite: storeId },
-            { store: storeId }
+            { currentSite: storeObj },
+            ...(isObjId ? [{ currentSite: storeId.toString() }] : []),
+            { store: storeObj },
+            ...(isObjId ? [{ store: storeId.toString() }] : [])
         ],
         isDeleted: { $ne: true }
     };
-    await Promise.all(fields.map(async (field) => {
+
+    // Categorical fields that are displayed in dropdown select menus
+    const categoricalFields = [
+        'toolType', 'status', 'toolVariant', 'makeYear',
+        'capacity', 'safeWorkingLoad', 'metalType',
+        'purchaserName', 'supplierCode', 'validityPeriod', 'jobCode'
+    ];
+
+    const options = {};
+    await Promise.all(categoricalFields.map(async (field) => {
         let values = [];
         if (field === 'validityPeriod') {
             const [coreVals, customValidationVals, customPeriodVals] = await Promise.all([
@@ -1503,6 +1570,8 @@ const getToolFilterOptions = async (storeId) => {
             .map(String)
             .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
     }));
+
+    filterOptionsCache.set(storeKey, { options, expiresAt: now + 5 * 60 * 1000 });
     return options;
 };
 
@@ -1608,6 +1677,7 @@ const bulkEditTools = async ({ storeId, toolIds, filterCriteria, updates, user }
 
     await auditLog.save();
 
+    invalidateStoreStatusCache(storeId);
     return {
         count: toolsToUpdate.length,
         auditLogId: auditLog._id
@@ -1775,6 +1845,9 @@ const transferTools = async ({ sourceStoreId, destinationStoreId, toolIds, remar
     });
 
     await auditLog.save();
+
+    invalidateStoreStatusCache(sourceStoreId);
+    invalidateStoreStatusCache(destinationStoreId);
 
     return {
         count: toolsToTransfer.length,
@@ -2069,6 +2142,7 @@ export const toolService = {
     createToolInStore,
     getToolById,
     getToolFilterOptions,
+    invalidateStoreStatusCache,
 
     // [APP] Mobile Batch Selection
     getToolsByIds,
