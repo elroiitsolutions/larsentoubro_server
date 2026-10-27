@@ -138,33 +138,22 @@ export const streamChallanPdf = (challan, outputStream) => {
                 String(challan.indentNo).trim() !== '' && 
                 challan.indentNo !== '-'
             );
+            const indentVal = hasIndent ? String(challan.indentNo).trim() : '-';
             const challanDateStr = formatDate(challan.challanDate || challan.createdAt);
 
-            if (hasIndent) {
-                // 3 Sub-columns in Left Box (DC NO, INDENT NO, DATE)
-                const colW3 = leftBoxWidth / 3; // 93.33
-                doc.moveTo(startX + colW3, metaDividerY).lineTo(startX + colW3, boxY + boxTopHeight).stroke();
-                doc.moveTo(startX + colW3 * 2, metaDividerY).lineTo(startX + colW3 * 2, boxY + boxTopHeight).stroke();
+            // Always show 3 Sub-columns in Left Box (DC NO, INDENT NO, DATE)
+            const colW3 = leftBoxWidth / 3; // 93.33
+            doc.moveTo(startX + colW3, metaDividerY).lineTo(startX + colW3, boxY + boxTopHeight).stroke();
+            doc.moveTo(startX + colW3 * 2, metaDividerY).lineTo(startX + colW3 * 2, boxY + boxTopHeight).stroke();
 
-                doc.fillColor('#000000').fontSize(6.5).font('Helvetica-Bold').text(dcNoLabel, startX + 6, metaDividerY + 4);
-                doc.fontSize(8.5).font('Helvetica-Bold').text(challanNo, startX + 6, metaDividerY + 13);
+            doc.fillColor('#000000').fontSize(6.5).font('Helvetica-Bold').text(dcNoLabel, startX + 6, metaDividerY + 4);
+            doc.fontSize(8.5).font('Helvetica-Bold').text(challanNo, startX + 6, metaDividerY + 13);
 
-                doc.fontSize(6.5).font('Helvetica-Bold').text('INDENT NO.', startX + colW3 + 6, metaDividerY + 4);
-                doc.fontSize(8).font('Helvetica').text(String(challan.indentNo).trim(), startX + colW3 + 6, metaDividerY + 13);
+            doc.fontSize(6.5).font('Helvetica-Bold').text('INDENT NO.', startX + colW3 + 6, metaDividerY + 4);
+            doc.fontSize(8).font('Helvetica').text(indentVal, startX + colW3 + 6, metaDividerY + 13);
 
-                doc.fontSize(6.5).font('Helvetica-Bold').text('DATE', startX + colW3 * 2 + 6, metaDividerY + 4);
-                doc.fontSize(8).font('Helvetica').text(challanDateStr, startX + colW3 * 2 + 6, metaDividerY + 13);
-            } else {
-                // 2 Sub-columns in Left Box (DC NO, DATE) matching reference image layout
-                const colW2 = leftBoxWidth / 2; // 140
-                doc.moveTo(startX + colW2, metaDividerY).lineTo(startX + colW2, boxY + boxTopHeight).stroke();
-
-                doc.fillColor('#000000').fontSize(6.5).font('Helvetica-Bold').text(dcNoLabel, startX + 6, metaDividerY + 4);
-                doc.fontSize(8.5).font('Helvetica-Bold').text(challanNo, startX + 6, metaDividerY + 13);
-
-                doc.fontSize(6.5).font('Helvetica-Bold').text('DATE', startX + colW2 + 6, metaDividerY + 4);
-                doc.fontSize(8).font('Helvetica').text(challanDateStr, startX + colW2 + 6, metaDividerY + 13);
-            }
+            doc.fontSize(6.5).font('Helvetica-Bold').text('DATE', startX + colW3 * 2 + 6, metaDividerY + 4);
+            doc.fontSize(8).font('Helvetica').text(challanDateStr, startX + colW3 * 2 + 6, metaDividerY + 13);
 
             // Right Box: Consignee / Subcontractor
             const vendor = challan.vendor || {};
