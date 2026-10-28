@@ -813,6 +813,10 @@ const deleteToolById = async (id, user = {}) => {
     if (tool.isPrinted) {
         throw new Error('Printed tools cannot be deleted. Only unprinted tools can be moved to Trash.');
     }
+    const toolStatus = (tool.status || '').trim().toLowerCase();
+    if (toolStatus !== 'available' && toolStatus !== 'missing') {
+        throw new Error(`Cannot delete tool with status "${tool.status}". Only Available and Missing tools can be deleted.`);
+    }
 
     const userInfo = {
         _id: user?._id || null,
@@ -885,6 +889,15 @@ const bulkDeleteTools = async ({ toolIds, storeId, user }) => {
     const printedTools = toolsToDelete.filter(t => t.isPrinted);
     if (printedTools.length > 0) {
         throw new Error(`Cannot delete: ${printedTools.length} selected tool(s) are printed. Only unprinted tools can be moved to Trash.`);
+    }
+    const nonDeletableTools = toolsToDelete.filter(tool => {
+        const s = (tool.status || '').trim().toLowerCase();
+        return s !== 'available' && s !== 'missing';
+    });
+
+    if (nonDeletableTools.length > 0) {
+        const nonDeletableNames = nonDeletableTools.map(t => `${t.toolId || t._id} (${t.status})`).join(', ');
+        throw new Error(`Cannot delete tool(s) that are moving or not in Available/Missing status: ${nonDeletableNames}. Only Available and Missing tools can be deleted.`);
     }
 
     const userInfo = {
@@ -2213,6 +2226,3 @@ export const toolService = {
     inspectTools,
     syncToolIdReferences
 };
-
-
-

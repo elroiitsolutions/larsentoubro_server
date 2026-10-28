@@ -56,6 +56,19 @@ export const createReturnChallan = async (req, res, next) => {
 };
 
 /**
+ * [SHARED] getNextChallanNumber - Query upcoming sequential Challan number (e.g. DC-26-043)
+ */
+export const getNextChallanNumber = async (req, res, next) => {
+    try {
+        const type = req.query.type || 'Delivery';
+        const challanNumber = await challanService.peekNextChallanNumber(type);
+        res.status(200).json({ success: true, data: { challanNumber } });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
  * [SHARED] getChallans - Query challans list with status and vendor filtering
  */
 export const getChallans = async (req, res, next) => {

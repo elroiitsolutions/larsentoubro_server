@@ -29,6 +29,11 @@ router.post('/scrap-delivery', restrictInspectionUser('creating scrap delivery c
 router.post('/return', challanController.createReturnChallan);
 
 /**
+ * [SHARED] GET /api/challans/next-number - Peek upcoming sequential Challan number for preview
+ */
+router.get('/next-number', challanController.getNextChallanNumber);
+
+/**
  * [SHARED] GET /api/challans - List challans with search and status filtering
  */
 router.get('/', challanController.getChallans);
