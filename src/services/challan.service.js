@@ -89,6 +89,61 @@ export const generateChallanNumber = async (type, session = null) => {
 };
 
 /**
+ * [SHARED] peekNextChallanNumber - Query upcoming sequential Challan number without incrementing counter
+ */
+export const peekNextChallanNumber = async (type = 'Delivery') => {
+    const fullYear = new Date().getFullYear();
+    const shortYear = String(fullYear).slice(-2);
+    const isScrapType = ['scrap', 'scrapdc', 'sdc'].includes(String(type).toLowerCase());
+    const counterId = isScrapType ? `challan_scrap_${fullYear}` : `challan_${type.toLowerCase()}_${fullYear}`;
+    const prefix = type === 'Delivery' ? 'DC' : type === 'Return' ? 'RC' : isScrapType ? 'SDC' : 'STC';
+
+    const regex = new RegExp(`^${prefix}-${shortYear}-(\\d+)$`, 'i');
+    let queryFilter = { challanType: type, challanNumber: { $regex: regex } };
+    if (isScrapType) {
+        queryFilter = {
+            $or: [
+                { isScrapDC: true },
+                { challanType: 'Scrap' }
+            ],
+            challanNumber: { $regex: regex }
+        };
+    }
+
+    const existingChallans = await Challan.find(
+        queryFilter,
+        { challanNumber: 1 }
+    ).lean();
+
+    let maxSeq = 0;
+    for (const c of existingChallans) {
+        if (c.challanNumber) {
+            const match = c.challanNumber.match(regex);
+            if (match && match[1]) {
+                const seqNum = parseInt(match[1], 10);
+                if (!isNaN(seqNum) && seqNum > maxSeq) {
+                    maxSeq = seqNum;
+                }
+            }
+        }
+    }
+
+    const currentCounter = await Counter.findById(counterId);
+    if (!currentCounter || currentCounter.seq < maxSeq) {
+        await Counter.findByIdAndUpdate(
+            counterId,
+            { seq: maxSeq },
+            { new: true, upsert: true }
+        );
+    }
+
+    const curSeq = currentCounter ? Math.max(currentCounter.seq, maxSeq) : maxSeq;
+    const nextSeq = curSeq + 1;
+    const serialNum = String(nextSeq).padStart(3, '0');
+    return `${prefix}-${shortYear}-${serialNum}`;
+};
+
+/**
  * Create Store-to-Store Transfer Challan (STC)
  */
 export const createStoreTransferChallan = async (data, user = {}, session = null) => {
