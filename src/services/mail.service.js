@@ -7,21 +7,45 @@ import { LNT_LOGO_BASE64 } from '../assets/logoBase64.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const logoFilePath = path.join(__dirname, '../assets/logo.png');
+const corporateLogoFilePath = path.join(__dirname, '../assets/corporate-logo.png');
+const appAssetLogoPath = path.resolve(__dirname, '../../../larsentoubro-app/assets/images/email template logo/L&T Construction Corporate Logo.png');
+const fallbackLogoPath = path.join(__dirname, '../assets/logo.png');
 
 let cachedLogoBuffer = null;
 const getLogoBuffer = () => {
     if (cachedLogoBuffer) return cachedLogoBuffer;
 
-    if (fs.existsSync(logoFilePath)) {
+    // 1. Primary: Copied corporate logo in server assets
+    if (fs.existsSync(corporateLogoFilePath)) {
         try {
-            cachedLogoBuffer = fs.readFileSync(logoFilePath);
+            cachedLogoBuffer = fs.readFileSync(corporateLogoFilePath);
             return cachedLogoBuffer;
         } catch (e) {
-            console.error('[MailService] Failed to read logo.png:', e.message);
+            console.error('[MailService] Failed to read corporate-logo.png:', e.message);
         }
     }
 
+    // 2. Secondary: Direct app email template logo
+    if (fs.existsSync(appAssetLogoPath)) {
+        try {
+            cachedLogoBuffer = fs.readFileSync(appAssetLogoPath);
+            return cachedLogoBuffer;
+        } catch (e) {
+            console.error('[MailService] Failed to read app corporate logo:', e.message);
+        }
+    }
+
+    // 3. Fallback: Standard logo.png
+    if (fs.existsSync(fallbackLogoPath)) {
+        try {
+            cachedLogoBuffer = fs.readFileSync(fallbackLogoPath);
+            return cachedLogoBuffer;
+        } catch (e) {
+            console.error('[MailService] Failed to read fallback logo.png:', e.message);
+        }
+    }
+
+    // 4. Fallback: Base64
     if (LNT_LOGO_BASE64) {
         try {
             const cleanBase64 = LNT_LOGO_BASE64.replace(/^data:image\/\w+;base64,/, '');
@@ -123,24 +147,21 @@ export const sendOtpEmail = async (toEmail, otp, recipientName = 'L&T Team Membe
                         <!-- MAIN CONTAINER CARD -->
                         <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" class="email-container" style="background-color: #ffffff; border-radius: 20px; overflow: hidden; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08); border: 1px solid #e2e8f0;">
                             
-                            <!-- HEADER -->
+                            <!-- HEADER (White Background with Official Corporate Logo) -->
                             <tr>
-                                <td align="center" class="email-header" style="background: linear-gradient(135deg, #091e36 0%, #0f2942 50%, #173859 100%); padding: 36px 24px 30px 24px; text-align: center;">
+                                <td align="center" class="email-header" style="background-color: #ffffff; padding: 34px 28px 24px 28px; text-align: center; border-bottom: 1px solid #e2e8f0;">
                                     
-                                    <!-- LOGO EMBLEM BADGE -->
-                                    <table role="presentation" border="0" cellpadding="0" cellspacing="0" style="margin: 0 auto 16px auto;">
+                                    <!-- CORPORATE LOGO -->
+                                    <table role="presentation" border="0" cellpadding="0" cellspacing="0" style="margin: 0 auto;">
                                         <tr>
-                                            <td align="center" style="background-color: #ffffff; width: 68px; height: 68px; border-radius: 50%; box-shadow: 0 4px 16px rgba(0,0,0,0.25); text-align: center; vertical-align: middle;">
-                                                <img src="cid:lntlogo" alt="L&T Logo" width="52" height="52" style="display: block; margin: 0 auto; width: 52px; height: 52px; border: 0; outline: none; border-radius: 50%;" />
+                                            <td align="center">
+                                                <img src="cid:lntlogo" alt="L&T Construction" width="240" style="display: block; margin: 0 auto; max-width: 240px; width: 100%; height: auto; border: 0; outline: none;" />
                                             </td>
                                         </tr>
                                     </table>
 
-                                    <!-- TITLE -->
-                                    <div style="font-size: 22px; font-weight: 800; letter-spacing: 2px; color: #fdb813; text-transform: uppercase; margin: 0; line-height: 1.2;">
-                                        LARSEN &amp; TOUBRO
-                                    </div>
-                                    <div style="font-size: 11px; font-weight: 600; color: #cbd5e1; letter-spacing: 1.8px; text-transform: uppercase; margin-top: 6px;">
+                                    <!-- SUBTITLE -->
+                                    <div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 1.8px; text-transform: uppercase; margin-top: 14px;">
                                         Tools &amp; Equipment Management Portal
                                     </div>
                                 </td>
@@ -232,8 +253,9 @@ Security Notice: Never share this OTP with anyone. If you did not initiate this 
     if (mailClient) {
         try {
             const info = await mailClient.sendMail({
-                from: env.SMTP_FROM,
+                from: env.SMTP_FROM || '"L&T Equipment Portal" <no-reply@larsentoubro.com>',
                 to: toEmail,
+                replyTo: 'no-reply@larsentoubro.com',
                 subject,
                 text: textContent,
                 html: htmlContent,
