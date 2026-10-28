@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { toolService } from '../services/tool.service.js';
 import { getVendorAssignedScope } from '../utils/vendorScope.js';
 import { Tool } from '../models/tool.model.js';
+import { startDeleteJob, addDeleteJobListener, removeDeleteJobListener, getDeleteJob } from '../services/deleteWorker.service.js';
 
 /**
  * [SHARED], [WEB] & [APP] Tool Inventory Controller
@@ -253,13 +254,29 @@ export const updateToolById = async (req, res, next) => {
  */
 export const deleteToolById = async (req, res, next) => {
     try {
-        if (req.user && req.user.role === 'Vendor') {
-            return res.status(403).json({ success: false, message: 'Access denied. Vendors cannot delete tools.' });
+        if (!req.user || req.user.role !== 'Admin') {
+            return res.status(403).json({ success: false, message: 'Access denied. Only Admins can delete tools.' });
         }
         const { toolId } = req.params;
         if (toolId === 'bulk-delete') {
             return bulkDeleteTools(req, res, next);
         }
+
+        const isAsync = req.query.async === 'true' || req.body?.async === true;
+        if (isAsync) {
+            const storeId = req.query.storeId || req.body?.storeId;
+            const job = await startDeleteJob({
+                toolIds: [toolId],
+                storeId,
+                user: req.user
+            });
+            return res.status(202).json({
+                success: true,
+                message: 'Delete job initiated',
+                data: { jobId: job.id, totalCount: 1 }
+            });
+        }
+
         const result = await toolService.deleteToolById(toolId, req.user);
         res.status(200).json({ success: true, message: 'Tool moved to Trash', data: result });
     } catch (error) {
@@ -272,20 +289,94 @@ export const deleteToolById = async (req, res, next) => {
  */
 export const bulkDeleteTools = async (req, res, next) => {
     try {
-        if (req.user && req.user.role === 'Vendor') {
-            return res.status(403).json({ success: false, message: 'Access denied. Vendors cannot delete tools.' });
+        if (!req.user || req.user.role !== 'Admin') {
+            return res.status(403).json({ success: false, message: 'Access denied. Only Admins can delete tools.' });
         }
         const { storeId } = req.params;
         if (storeId && !verifyStoreAccess(req, storeId)) {
             return res.status(403).json({ success: false, message: 'Access denied. You are not assigned to this store.' });
         }
-        const { toolIds } = req.body;
+        const { toolIds, async: isAsync } = req.body;
+        if (!Array.isArray(toolIds) || toolIds.length === 0) {
+            return res.status(400).json({ success: false, message: 'toolIds array is required' });
+        }
+
+        if (isAsync) {
+            const job = await startDeleteJob({
+                toolIds,
+                storeId,
+                user: req.user
+            });
+            return res.status(202).json({
+                success: true,
+                message: 'Bulk delete job initiated',
+                data: { jobId: job.id, totalCount: toolIds.length }
+            });
+        }
+
         const result = await toolService.bulkDeleteTools({
             storeId,
             toolIds,
             user: req.user
         });
         res.status(200).json({ success: true, message: `Successfully deleted ${result.count} tools`, data: result });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * [WEB] streamDeleteJobProgress - Stream real-time delete & re-sequence progress via SSE
+ */
+export const streamDeleteJobProgress = async (req, res, next) => {
+    try {
+        const { jobId } = req.params;
+        const job = getDeleteJob(jobId);
+
+        if (!job) {
+            return res.status(404).json({ success: false, message: 'Delete job not found or expired' });
+        }
+
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('X-Accel-Buffering', 'no');
+        res.flushHeaders();
+
+        // If job is already complete or failed, send final state and end
+        if (job.status === 'completed' || job.status === 'failed') {
+            res.write(`data: ${JSON.stringify(job)}\n\n`);
+            res.end();
+            return;
+        }
+
+        // Send current progress snapshot
+        res.write(`data: ${JSON.stringify(job)}\n\n`);
+
+        // Register listener
+        addDeleteJobListener(jobId, res);
+
+        req.on('close', () => {
+            removeDeleteJobListener(jobId, res);
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * [WEB] getDeleteJobStatus - Get status of a delete job (polling fallback)
+ */
+export const getDeleteJobStatus = async (req, res, next) => {
+    try {
+        const { jobId } = req.params;
+        const job = getDeleteJob(jobId);
+
+        if (!job) {
+            return res.status(404).json({ success: false, message: 'Delete job not found or expired' });
+        }
+
+        res.status(200).json({ success: true, data: job });
     } catch (error) {
         next(error);
     }

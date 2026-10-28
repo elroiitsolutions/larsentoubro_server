@@ -104,5 +104,9 @@ const challanSchema = new mongoose.Schema({
     timestamps: true
 });
 
+// Indexes for fast challan tool lookup and reconciliation
+challanSchema.index({ 'items.tool': 1 });
+challanSchema.index({ challanType: 1, status: 1, createdAt: -1 });
+
 export const Challan = mongoose.model('Challan', challanSchema);
 export default Challan;

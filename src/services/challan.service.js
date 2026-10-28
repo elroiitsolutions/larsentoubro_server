@@ -89,6 +89,61 @@ export const generateChallanNumber = async (type, session = null) => {
 };
 
 /**
+ * [SHARED] peekNextChallanNumber - Query upcoming sequential Challan number without incrementing counter
+ */
+export const peekNextChallanNumber = async (type = 'Delivery') => {
+    const fullYear = new Date().getFullYear();
+    const shortYear = String(fullYear).slice(-2);
+    const isScrapType = ['scrap', 'scrapdc', 'sdc'].includes(String(type).toLowerCase());
+    const counterId = isScrapType ? `challan_scrap_${fullYear}` : `challan_${type.toLowerCase()}_${fullYear}`;
+    const prefix = type === 'Delivery' ? 'DC' : type === 'Return' ? 'RC' : isScrapType ? 'SDC' : 'STC';
+
+    const regex = new RegExp(`^${prefix}-${shortYear}-(\\d+)$`, 'i');
+    let queryFilter = { challanType: type, challanNumber: { $regex: regex } };
+    if (isScrapType) {
+        queryFilter = {
+            $or: [
+                { isScrapDC: true },
+                { challanType: 'Scrap' }
+            ],
+            challanNumber: { $regex: regex }
+        };
+    }
+
+    const existingChallans = await Challan.find(
+        queryFilter,
+        { challanNumber: 1 }
+    ).lean();
+
+    let maxSeq = 0;
+    for (const c of existingChallans) {
+        if (c.challanNumber) {
+            const match = c.challanNumber.match(regex);
+            if (match && match[1]) {
+                const seqNum = parseInt(match[1], 10);
+                if (!isNaN(seqNum) && seqNum > maxSeq) {
+                    maxSeq = seqNum;
+                }
+            }
+        }
+    }
+
+    const currentCounter = await Counter.findById(counterId);
+    if (!currentCounter || currentCounter.seq < maxSeq) {
+        await Counter.findByIdAndUpdate(
+            counterId,
+            { seq: maxSeq },
+            { new: true, upsert: true }
+        );
+    }
+
+    const curSeq = currentCounter ? Math.max(currentCounter.seq, maxSeq) : maxSeq;
+    const nextSeq = curSeq + 1;
+    const serialNum = String(nextSeq).padStart(3, '0');
+    return `${prefix}-${shortYear}-${serialNum}`;
+};
+
+/**
  * Create Store-to-Store Transfer Challan (STC)
  */
 export const createStoreTransferChallan = async (data, user = {}, session = null) => {
@@ -676,11 +731,6 @@ export const createScrapDeliveryChallan = async (data, user = {}) => {
 
     const toolIds = items.map(i => i.tool);
     const toolsToCheck = await Tool.find({ _id: { $in: toolIds } });
-    const unprintedTools = toolsToCheck.filter(t => !t.isPrinted);
-    if (unprintedTools.length > 0) {
-        const unprintedLabels = unprintedTools.map(t => t.toolId || t.toolCode || t.description || t._id.toString()).join(', ');
-        throw new Error(`Cannot create Scrap Delivery Challan: Tool(s) [${unprintedLabels}] are not marked as Printed. All selected tools must be printed before moving tools to Scrap.`);
-    }
 
     const alreadyDisposed = toolsToCheck.filter(t => t.isDisposed);
     if (alreadyDisposed.length > 0) {
@@ -716,20 +766,28 @@ export const createScrapDeliveryChallan = async (data, user = {}) => {
 
         let projectSnapshot = null;
         if (toolsToCheck.length > 0 && toolsToCheck[0].project) {
-            const projDoc = await Project.findById(toolsToCheck[0].project).lean();
-            if (projDoc) {
-                projectSnapshot = {
-                    _id: projDoc._id,
-                    name: projDoc.name || '',
-                    projectCode: projDoc.projectCode || ''
-                };
+            const rawProjId = toolsToCheck[0].project?._id || toolsToCheck[0].project;
+            if (rawProjId && mongoose.Types.ObjectId.isValid(String(rawProjId))) {
+                const projDoc = await Project.findById(rawProjId).lean();
+                if (projDoc) {
+                    projectSnapshot = {
+                        _id: projDoc._id,
+                        name: projDoc.name || '',
+                        projectCode: projDoc.projectCode || ''
+                    };
+                }
             }
         }
 
         let sourceStoreSnapshot = null;
-        const targetStoreId = storeId || (toolsToCheck.length > 0 ? (toolsToCheck[0].currentSite || toolsToCheck[0].store) : null);
-        if (targetStoreId) {
-            const storeDoc = await Store.findById(targetStoreId).lean();
+        const rawStoreId = (storeId && storeId !== 'undefined' && storeId !== 'null') 
+            ? storeId 
+            : (toolsToCheck.length > 0 ? (toolsToCheck[0].currentSite?._id || toolsToCheck[0].currentSite || toolsToCheck[0].store?._id || toolsToCheck[0].store) : null);
+        const validStoreId = (rawStoreId && mongoose.Types.ObjectId.isValid(String(rawStoreId))) 
+            ? String(rawStoreId) 
+            : null;
+        if (validStoreId) {
+            const storeDoc = await Store.findById(validStoreId).lean();
             if (storeDoc) {
                 sourceStoreSnapshot = {
                     _id: storeDoc._id,
@@ -770,7 +828,7 @@ export const createScrapDeliveryChallan = async (data, user = {}) => {
             mrnNo,
             receiptDate,
             vendor: scrapDealerSnapshot,
-            store: targetStoreId || null,
+            store: validStoreId || null,
             challanDate: challanDate ? new Date(challanDate) : new Date(),
             deliveryDate: deliveryDate ? new Date(deliveryDate) : new Date(),
             remarks: remarks || `Scrap Transfer to ${scrapDealerSnapshot.name}`,

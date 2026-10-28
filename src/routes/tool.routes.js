@@ -17,7 +17,9 @@ import {
     transferTools,
     lookupToolValidity,
     inspectTools,
-    getToolsByIds
+    getToolsByIds,
+    streamDeleteJobProgress,
+    getDeleteJobStatus
 } from '../controllers/tool.controller.js';
 import { authenticate, requireAdmin, requireInspectionPermission, restrictInspectionUser } from '../middleware/auth.middleware.js';
 
@@ -108,6 +110,16 @@ router.post('/bulk-edit', requireAdmin, bulkEditTools);
  * [SHARED] POST /api/tools/transfer - Transfer tools between stores
  */
 router.post('/transfer', restrictInspectionUser('transferring tools'), transferTools);
+
+/**
+ * [WEB] GET /api/tools/delete-jobs/:jobId/stream - Real-time SSE progress stream for delete job
+ */
+router.get('/delete-jobs/:jobId/stream', requireAdmin, streamDeleteJobProgress);
+
+/**
+ * [WEB] GET /api/tools/delete-jobs/:jobId/status - Poll status of delete job
+ */
+router.get('/delete-jobs/:jobId/status', requireAdmin, getDeleteJobStatus);
 
 // ==========================================
 // [SHARED] Single Tool Parameter Endpoints (:toolId)

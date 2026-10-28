@@ -17,6 +17,16 @@ const router = Router();
 router.post('/login', validate(userValidator.loginUser), userController.loginUser);
 
 /**
+ * [SHARED] POST /api/users/request-otp - Send single-use 6-digit verification code to registered email
+ */
+router.post('/request-otp', validate(userValidator.requestOtp), userController.requestOtp);
+
+/**
+ * [SHARED] POST /api/users/verify-otp - Verify 6-digit OTP code and receive JWT session
+ */
+router.post('/verify-otp', validate(userValidator.verifyOtp), userController.verifyOtp);
+
+/**
  * [SHARED] POST /api/users/guest-login - Instant guest access for scanning/viewing tools
  * Used by Web and Mobile QR scanner view.
  */
