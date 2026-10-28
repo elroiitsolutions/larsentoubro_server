@@ -676,11 +676,6 @@ export const createScrapDeliveryChallan = async (data, user = {}) => {
 
     const toolIds = items.map(i => i.tool);
     const toolsToCheck = await Tool.find({ _id: { $in: toolIds } });
-    const unprintedTools = toolsToCheck.filter(t => !t.isPrinted);
-    if (unprintedTools.length > 0) {
-        const unprintedLabels = unprintedTools.map(t => t.toolId || t.toolCode || t.description || t._id.toString()).join(', ');
-        throw new Error(`Cannot create Scrap Delivery Challan: Tool(s) [${unprintedLabels}] are not marked as Printed. All selected tools must be printed before moving tools to Scrap.`);
-    }
 
     const alreadyDisposed = toolsToCheck.filter(t => t.isDisposed);
     if (alreadyDisposed.length > 0) {

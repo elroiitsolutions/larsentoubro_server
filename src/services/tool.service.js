@@ -129,8 +129,15 @@ const applyAdvancedFilters = (query, params) => {
     }
 
     if (params.status && params.status !== 'All' && String(params.status).trim()) {
-        const escapedStat = String(params.status).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        query.status = { $regex: escapedStat, $options: 'i' };
+        const strStatus = String(params.status).trim();
+        if (strStatus.toLowerCase() === 'printed') {
+            query.isPrinted = true;
+        } else if (strStatus.toLowerCase() === 'not printed' || strStatus.toLowerCase() === 'unprinted') {
+            query.isPrinted = { $ne: true };
+        } else {
+            const escapedStat = strStatus.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            query.status = { $regex: escapedStat, $options: 'i' };
+        }
     }
 
     const printVal = params.printStatus || params.isPrinted;
@@ -250,7 +257,7 @@ const applyAdvancedFilters = (query, params) => {
     }
 };
 
-export const resequenceProjectToolSerials = async (projectId) => {
+export const resequenceProjectToolSerials = async (projectId, onProgress = null) => {
     if (!projectId) return;
     const projIdStr = projectId._id ? projectId._id.toString() : projectId.toString();
     const isObjId = mongoose.Types.ObjectId.isValid(projIdStr);
@@ -293,12 +300,15 @@ export const resequenceProjectToolSerials = async (projectId) => {
     const printedSerials = new Set(printedTools.map(t => t.serialNumber).filter(Boolean));
     const printedToolIds = new Set(printedTools.map(t => t.toolId).filter(id => id && !id.startsWith('__TEMP_')));
 
-    // 3. Fetch active (non-deleted, non-scrapped) tools to resequence.
+    // 3. Fetch active (non-deleted, non-scrapped) tools to resequence with lean() and select() for maximum speed
     const activeTools = await Tool.find({
         ...projectOrSiteFilter,
         isDeleted: { $ne: true },
         isScrapped: { $ne: true }
-    }).sort({ createdAt: 1, _id: 1 });
+    })
+    .select('_id isPrinted toolId serialNumber description metalType toolVariant capacity safeWorkingLoad dateOfSupply purchaserName project currentSite store createdAt')
+    .sort({ createdAt: 1, _id: 1 })
+    .lean();
 
     let currentSerial = 1;
     const updates = [];
@@ -331,16 +341,34 @@ export const resequenceProjectToolSerials = async (projectId) => {
     }
 
     if (updates.length > 0) {
-        // Pass 1: Assign temporary toolId in bulk to avoid E11000 duplicate key collision on { project: 1, toolId: 1 }
+        const BATCH_SIZE = 500;
+        const totalBatches = Math.ceil(updates.length / BATCH_SIZE);
+
+        // Pass 1: Assign temporary toolId in bulk batches to avoid E11000 duplicate key collision on { project: 1, toolId: 1 }
         const tempOps = updates.map(({ tool }) => ({
             updateOne: {
                 filter: { _id: tool._id },
                 update: { $set: { toolId: `__TEMP_${tool._id}_${Date.now()}` } }
             }
         }));
-        await Tool.bulkWrite(tempOps, { ordered: false });
 
-        // Pass 2: Assign final serial numbers, toolIds, and QR links in bulk
+        for (let b = 0; b < tempOps.length; b += BATCH_SIZE) {
+            const chunk = tempOps.slice(b, b + BATCH_SIZE);
+            await Tool.bulkWrite(chunk, { ordered: false });
+            if (onProgress) {
+                const processed = Math.min(b + chunk.length, tempOps.length);
+                const batchNum = Math.floor(b / BATCH_SIZE) + 1;
+                onProgress({
+                    stage: 'preparing_ids',
+                    message: `Preparing sequence updates (Batch ${batchNum}/${totalBatches}, ${processed}/${updates.length} tools)...`,
+                    percentage: Math.round((processed / updates.length) * 45),
+                    processedCount: processed,
+                    totalCount: updates.length
+                });
+            }
+        }
+
+        // Pass 2: Assign final serial numbers, toolIds, and QR links in bulk batches
         const finalOps = updates.map(({ tool, newSerial, newToolId, newQrLink }) => ({
             updateOne: {
                 filter: { _id: tool._id },
@@ -353,7 +381,22 @@ export const resequenceProjectToolSerials = async (projectId) => {
                 }
             }
         }));
-        await Tool.bulkWrite(finalOps, { ordered: false });
+
+        for (let b = 0; b < finalOps.length; b += BATCH_SIZE) {
+            const chunk = finalOps.slice(b, b + BATCH_SIZE);
+            await Tool.bulkWrite(chunk, { ordered: false });
+            if (onProgress) {
+                const processed = Math.min(b + chunk.length, finalOps.length);
+                const batchNum = Math.floor(b / BATCH_SIZE) + 1;
+                onProgress({
+                    stage: 'updating_ids',
+                    message: `Updating System IDs & Serial Numbers (Batch ${batchNum}/${totalBatches}, ${processed}/${updates.length} tools)...`,
+                    percentage: 45 + Math.round((processed / updates.length) * 50),
+                    processedCount: processed,
+                    totalCount: updates.length
+                });
+            }
+        }
 
         // Only printed tools can have foreign references in Challans, Movements, or Missing lists.
         // Unprinted tools are never dispatched on Challans, avoiding up to 18,000 redundant queries.
@@ -366,11 +409,29 @@ export const resequenceProjectToolSerials = async (projectId) => {
                 printedUpdates.map(({ tool, newToolId }) => syncToolIdReferences(tool._id, tool.toolId, newToolId))
             );
         }
+    } else if (onProgress) {
+        onProgress({
+            stage: 'resequencing',
+            message: 'All remaining tools are in valid sequence.',
+            percentage: 95,
+            processedCount: 0,
+            totalCount: 0
+        });
     }
 
     const projectScopeKey = ToolIdGenerator.getProjectScopeKey({ project: projIdStr });
     const counterId = `tool_serial_${projectScopeKey.replace(/[^A-Z0-9_-]/gi, '_')}`;
     await Counter.findByIdAndUpdate(counterId, { seq: currentSerial - 1 }, { upsert: true });
+
+    if (onProgress) {
+        onProgress({
+            stage: 'completed',
+            message: `Completed re-sequencing for ${updates.length} active tools.`,
+            percentage: 100,
+            processedCount: updates.length,
+            totalCount: updates.length
+        });
+    }
 };
 
 const getToolsByStoreId = async (storeId, params = {}) => {
@@ -745,72 +806,61 @@ const deleteToolById = async (id, user = {}) => {
         return tool; // Already soft deleted or scrapped
     }
 
+    if (user && user.role !== 'Admin') {
+        throw new Error('Access denied. Only Admins can delete tools.');
+    }
+
+    if (tool.isPrinted) {
+        throw new Error('Printed tools cannot be deleted. Only unprinted tools can be moved to Trash.');
+    }
+
     const userInfo = {
         _id: user?._id || null,
-        name: user?.name || user?.username || 'System User',
-        email: user?.email || 'system@landt.com'
+        name: user?.name || user?.username || 'Admin User',
+        email: user?.email || 'admin@landt.com'
     };
 
     if (!tool.originalSerialNumber) {
         tool.originalSerialNumber = tool.serialNumber;
     }
 
-    if (tool.isPrinted) {
-        // PRINTED TOOL -> Move to Scrap, DO NOT re-sequence active tools!
-        tool.isDeleted = true;
-        tool.isScrapped = true;
-        tool.status = 'Scrapped';
-        tool.scrappedAt = new Date();
-        tool.scrappedBy = userInfo;
-        await tool.save();
-
-        const auditLog = new ToolAuditLog({
-            user: userInfo,
-            dateTime: new Date(),
-            action: 'Scrap Printed Tool',
-            store: tool.currentSite || tool.store,
-            affectedToolsCount: 1,
-            toolIds: [tool.toolId],
-            remarks: `Moved printed tool ${tool.toolId} to Scrap (no re-sequencing)`
-        });
-        await auditLog.save();
-
-        return tool;
-    } else {
-        // UNPRINTED TOOL -> Soft Delete to Trash, RE-SEQUENCE active tools!
-        tool.isDeleted = true;
-        tool.isScrapped = false;
-        tool.status = 'Deleted';
-        tool.deletedAt = new Date();
-        tool.deletedBy = userInfo;
-        if (tool.toolId && !tool.toolId.startsWith('__TRASHED_')) {
-            tool.toolId = `__TRASHED_${tool._id}_${tool.toolId}`;
-        }
-        await tool.save();
-
-        if (tool.project || tool.currentSite) {
-            await resequenceProjectToolSerials(tool.project || tool.currentSite);
-        }
-
-        const auditLog = new ToolAuditLog({
-            user: userInfo,
-            dateTime: new Date(),
-            action: 'Delete Unprinted Tool',
-            store: tool.currentSite || tool.store,
-            affectedToolsCount: 1,
-            toolIds: [tool.toolId],
-            remarks: `Soft deleted unprinted tool ${tool.toolId}`
-        });
-        await auditLog.save();
-
-        invalidateStoreStatusCache(tool.currentSite);
-        return tool;
+    // UNPRINTED TOOL -> Soft Delete to Trash, RE-SEQUENCE active tools!
+    tool.isDeleted = true;
+    tool.isScrapped = false;
+    tool.status = 'Deleted';
+    tool.deletedAt = new Date();
+    tool.deletedBy = userInfo;
+    if (tool.toolId && !tool.toolId.startsWith('__TRASHED_')) {
+        tool.toolId = `__TRASHED_${tool._id}_${tool.toolId}`;
     }
+    await tool.save();
+
+    if (tool.project || tool.currentSite) {
+        await resequenceProjectToolSerials(tool.project || tool.currentSite);
+    }
+
+    const auditLog = new ToolAuditLog({
+        user: userInfo,
+        dateTime: new Date(),
+        action: 'Delete Unprinted Tool',
+        store: tool.currentSite || tool.store,
+        affectedToolsCount: 1,
+        toolIds: [tool.toolId],
+        remarks: `Soft deleted unprinted tool ${tool.toolId} to Trash`
+    });
+    await auditLog.save();
+
+    invalidateStoreStatusCache(tool.currentSite);
+    return tool;
 };
 
 const bulkDeleteTools = async ({ toolIds, storeId, user }) => {
     if (!Array.isArray(toolIds) || toolIds.length === 0) {
         throw new Error('Specific tool IDs must be selected for bulk delete');
+    }
+
+    if (user && user.role !== 'Admin') {
+        throw new Error('Access denied. Only Admins can delete tools.');
     }
 
     let query = {
@@ -831,10 +881,16 @@ const bulkDeleteTools = async ({ toolIds, storeId, user }) => {
         return { count: 0, message: 'No active tools found to delete' };
     }
 
+    // Strictly disallow deleting printed tools
+    const printedTools = toolsToDelete.filter(t => t.isPrinted);
+    if (printedTools.length > 0) {
+        throw new Error(`Cannot delete: ${printedTools.length} selected tool(s) are printed. Only unprinted tools can be moved to Trash.`);
+    }
+
     const userInfo = {
         _id: user?._id || null,
-        name: user?.name || user?.username || 'System User',
-        email: user?.email || 'system@landt.com'
+        name: user?.name || user?.username || 'Admin User',
+        email: user?.email || 'admin@landt.com'
     };
 
     const affectedProjectIds = new Set();
@@ -845,53 +901,38 @@ const bulkDeleteTools = async ({ toolIds, storeId, user }) => {
         targetToolIds.push(tool.toolId || tool._id.toString());
         const originalSerial = tool.originalSerialNumber || tool.serialNumber;
 
-        if (tool.isPrinted) {
-            // Move printed tool to Scrap - DO NOT resequence
-            deleteOps.push({
-                updateOne: {
-                    filter: { _id: tool._id },
-                    update: {
-                        $set: {
-                            originalSerialNumber: originalSerial,
-                            isDeleted: true,
-                            isScrapped: true,
-                            status: 'Scrapped',
-                            scrappedAt: new Date(),
-                            scrappedBy: userInfo
-                        }
+        // Soft delete unprinted tool to Trash - WILL resequence
+        const trashedId = (tool.toolId && !tool.toolId.startsWith('__TRASHED_'))
+            ? `__TRASHED_${tool._id}_${tool.toolId}`
+            : tool.toolId;
+
+        deleteOps.push({
+            updateOne: {
+                filter: { _id: tool._id },
+                update: {
+                    $set: {
+                        originalSerialNumber: originalSerial,
+                        isDeleted: true,
+                        isScrapped: false,
+                        status: 'Deleted',
+                        deletedAt: new Date(),
+                        deletedBy: userInfo,
+                        toolId: trashedId
                     }
                 }
-            });
-        } else {
-            // Soft delete unprinted tool to Trash - WILL resequence
-            const trashedId = (tool.toolId && !tool.toolId.startsWith('__TRASHED_'))
-                ? `__TRASHED_${tool._id}_${tool.toolId}`
-                : tool.toolId;
+            }
+        });
 
-            deleteOps.push({
-                updateOne: {
-                    filter: { _id: tool._id },
-                    update: {
-                        $set: {
-                            originalSerialNumber: originalSerial,
-                            isDeleted: true,
-                            isScrapped: false,
-                            status: 'Deleted',
-                            deletedAt: new Date(),
-                            deletedBy: userInfo,
-                            toolId: trashedId
-                        }
-                    }
-                }
-            });
-
-            if (tool.project) affectedProjectIds.add(tool.project.toString());
-            else if (tool.currentSite) affectedProjectIds.add(tool.currentSite.toString());
-        }
+        if (tool.project) affectedProjectIds.add(tool.project.toString());
+        else if (tool.currentSite) affectedProjectIds.add(tool.currentSite.toString());
     }
 
+    const BATCH_SIZE = 500;
     if (deleteOps.length > 0) {
-        await Tool.bulkWrite(deleteOps, { ordered: false });
+        for (let i = 0; i < deleteOps.length; i += BATCH_SIZE) {
+            const chunk = deleteOps.slice(i, i + BATCH_SIZE);
+            await Tool.bulkWrite(chunk, { ordered: false });
+        }
     }
 
     for (const projId of affectedProjectIds) {
@@ -901,11 +942,11 @@ const bulkDeleteTools = async ({ toolIds, storeId, user }) => {
     const auditLog = new ToolAuditLog({
         user: userInfo,
         dateTime: new Date(),
-        action: 'Bulk Delete Tools',
+        action: 'Bulk Delete Unprinted Tools',
         store: storeId || undefined,
         affectedToolsCount: toolsToDelete.length,
         toolIds: targetToolIds,
-        remarks: `Bulk deleted ${toolsToDelete.length} tools`
+        remarks: `Bulk deleted ${toolsToDelete.length} unprinted tools to Trash`
     });
     await auditLog.save();
 
@@ -1562,6 +1603,8 @@ const getToolFilterOptions = async (storeId) => {
                 Tool.distinct('customFields.validityPeriod', storeQuery)
             ]);
             values = Array.from(new Set([...coreVals, ...customValidationVals, ...customPeriodVals]));
+        } else if (field === 'status') {
+            values = ['Available', 'Moving', 'Repair', 'Printed', 'Not Printed'];
         } else {
             values = await Tool.distinct(field, storeQuery);
         }

@@ -8,6 +8,7 @@ import { AuditLog } from '../models/auditLog.model.js';
 import { realtimeService } from '../services/socket.service.js';
 import { Vendor } from '../models/vendor.model.js';
 import { parseUserAgent } from '../utils/deviceInfo.js';
+import otpService from '../services/otp.service.js';
 
 /**
  * [SHARED] & [WEB] User Controller
@@ -264,14 +265,59 @@ const getCurrentUser = async (req, res, next) => {
     }
 };
 
-// User, Subuser & Vendor Login Flow
+// [SHARED] Request OTP for Email-based authentication
+const requestOtp = async (req, res, next) => {
+    try {
+        const clientIp = req.ip || req.socket.remoteAddress || '';
+        const userAgentHeader = req.headers['user-agent'] || '';
+        const result = await otpService.requestOtp(req.body.email, { ip: clientIp, userAgent: userAgentHeader });
+        return res.status(200).json(result);
+    } catch (error) {
+        const statusCode = error.status || 500;
+        return res.status(statusCode).json({
+            success: false,
+            message: error.message,
+            retryAfter: error.retryAfter
+        });
+    }
+};
+
+// [SHARED] Verify 6-digit OTP and issue JWT session
+const verifyOtp = async (req, res, next) => {
+    try {
+        const clientIp = req.ip || req.socket.remoteAddress || '';
+        const userAgentHeader = req.headers['user-agent'] || '';
+        const result = await otpService.verifyOtp(req.body.email, req.body.otp, { ip: clientIp, userAgent: userAgentHeader });
+        return res.status(200).json(result);
+    } catch (error) {
+        const statusCode = error.status || 400;
+        return res.status(statusCode).json({
+            success: false,
+            message: error.message
+        });
+    }
+};
+
+// User, Subuser & Vendor Login Flow (Supports Email OTP & Backward Compatibility)
 const loginUser = async (req, res, next) => {
     try {
-        const { email, password } = req.body;
+        const { email, password, otp } = req.body;
         const normalizedEmail = (email || '').trim().toLowerCase();
         const clientIp = req.ip || req.socket.remoteAddress || '';
         const userAgentHeader = req.headers['user-agent'] || '';
         const deviceInfo = parseUserAgent(userAgentHeader);
+
+        // If OTP provided, verify OTP directly
+        if (otp) {
+            const result = await otpService.verifyOtp(normalizedEmail, otp, { ip: clientIp, userAgent: userAgentHeader });
+            return res.status(200).json(result);
+        }
+
+        // If no password provided, trigger OTP request
+        if (!password) {
+            const result = await otpService.requestOtp(normalizedEmail, { ip: clientIp, userAgent: userAgentHeader });
+            return res.status(200).json(result);
+        }
 
         // 1. First check User collection for internal team members and subusers
         const user = await userService.getUserByEmail(normalizedEmail);
@@ -784,6 +830,8 @@ export const userController = {
 
     // [SHARED] Authentication & Multi-Device Approvals
     loginUser,
+    requestOtp,
+    verifyOtp,
     guestLogin,
     checkLoginRequestStatus,
     getPendingLoginRequests,

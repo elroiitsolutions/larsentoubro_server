@@ -34,15 +34,31 @@ const updateUser = z.object({
     })
 });
 
+const requestOtp = z.object({
+    body: z.object({
+        email: z.string().email("Invalid email format")
+    })
+});
+
+const verifyOtp = z.object({
+    body: z.object({
+        email: z.string().email("Invalid email format"),
+        otp: z.string().min(6, "Verification code must be 6 digits").max(6, "Verification code must be 6 digits")
+    })
+});
+
 const loginUser = z.object({
     body: z.object({
         email: z.string().email("Invalid email format"),
-        password: z.string().min(6, "Password must be at least 6 characters")
+        password: z.string().optional(),
+        otp: z.string().optional()
     })
 });
 
 export const userValidator = {
     createUser,
     updateUser,
-    loginUser
+    loginUser,
+    requestOtp,
+    verifyOtp
 };
