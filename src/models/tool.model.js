@@ -88,7 +88,17 @@ const toolSchema = new mongoose.Schema({
     disposalChallanNumber: { type: String, default: '' },
     scrapDealer: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor', default: null }
 }, {
-    timestamps: true
+    timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true }
+});
+
+// Virtual for backwards compatibility with legacy queries referencing 'store'
+toolSchema.virtual('store', {
+    ref: 'Store',
+    localField: 'currentSite',
+    foreignField: '_id',
+    justOne: true
 });
 
 // Tool ID is unique per Project

@@ -221,10 +221,6 @@ export const sendOtpEmail = async (toEmail, otp, recipientName = 'L&T Team Membe
                                     <div style="font-weight: 700; color: #64748b; margin-bottom: 2px;">
                                         Larsen &amp; Toubro Limited &bull; Construction &amp; Equipment Division
                                     </div>
-                                    <div>
-                                        Automated system transmission sent to <span style="color: #475569; font-weight: 600;">${toEmail}</span>.<br />
-                                        &copy; ${new Date().getFullYear()} Larsen &amp; Toubro Limited. All rights reserved.
-                                    </div>
                                 </td>
                             </tr>
 

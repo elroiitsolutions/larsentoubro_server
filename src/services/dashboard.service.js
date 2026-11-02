@@ -5,7 +5,7 @@ import { Store } from '../models/store.model.js';
 import { ToolMovement } from '../models/toolMovement.model.js';
 import ToolAuditLog from '../models/toolAuditLog.model.js';
 import { getVendorAssignedScope } from '../utils/vendorScope.js';
-import { reconcileMissingToolStatuses } from './challan.service.js';
+import { triggerBackgroundChallanReconciliation } from './challan.service.js';
 
 /**
  * [SHARED] Dashboard & Analytics Service
@@ -17,8 +17,8 @@ import { reconcileMissingToolStatuses } from './challan.service.js';
  * [SHARED] getDashboardStats - Calculate total counts, category distribution, DC/RC status, and alerts
  */
 export const getDashboardStats = async (filters = {}, user = null) => {
-    // Self-healing: Reconcile missing tool statuses across projects to eliminate cross-project pollution
-    await reconcileMissingToolStatuses();
+    // Self-healing: trigger throttled background reconciliation without blocking dashboard response
+    triggerBackgroundChallanReconciliation();
 
     const {
         division,

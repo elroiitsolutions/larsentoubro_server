@@ -280,7 +280,7 @@ export const syncMissingStoreTransferChallans = async () => {
             if (existing) continue;
 
             const toolIds = movements.map(m => m.tool).filter(Boolean);
-            const tools = await Tool.find({ _id: { $in: toolIds } }).populate('store').populate('currentSite').populate('project').lean();
+            const tools = await Tool.find({ _id: { $in: toolIds } }).populate('currentSite').populate('project').lean();
             const toolMap = new Map(tools.map(t => [t._id.toString(), t]));
 
             const firstMov = movements[0];
@@ -316,7 +316,7 @@ export const syncMissingStoreTransferChallans = async () => {
                 projectCode: firstTool.project.projectCode || firstTool.project.code || ''
             } : {};
 
-            const destStoreObj = firstTool?.currentSite || firstTool?.store;
+            const destStoreObj = firstTool?.currentSite || firstTool?.hub;
 
             const challan = new Challan({
                 challanNumber,
@@ -1449,18 +1449,34 @@ export const reconcileOrphanedMovingToolStatuses = async () => {
     }
 };
 
+// Non-blocking throttled background reconciliation
+let lastChallanReconcileTime = 0;
+const CHALLAN_RECONCILE_THROTTLE_MS = 15 * 60 * 1000; // 15 minutes throttle
+
+export const triggerBackgroundChallanReconciliation = () => {
+    const now = Date.now();
+    if (now - lastChallanReconcileTime < CHALLAN_RECONCILE_THROTTLE_MS) return;
+    lastChallanReconcileTime = now;
+
+    // Asynchronous non-blocking background task (never blocks user HTTP requests)
+    setImmediate(async () => {
+        try {
+            await syncMissingStoreTransferChallans();
+            await reconcileMissingToolStatuses();
+            await reconcileReturnedToolStatuses();
+            await reconcileOrphanedMovingToolStatuses();
+        } catch (err) {
+            console.error('[backgroundChallanReconciliation] Error:', err.message);
+        }
+    });
+};
+
 /**
  * Get paginated & filtered Challans
  */
 export const getChallans = async (params = {}) => {
-    // Self-healing: sync any past unlinked store tool transfers to Store Transfer Challans
-    await syncMissingStoreTransferChallans();
-    // Self-healing: reconcile any missing tool statuses across projects
-    await reconcileMissingToolStatuses();
-    // Self-healing: reconcile any returned tool statuses
-    await reconcileReturnedToolStatuses();
-    // Self-healing: reconcile any orphaned moving tool statuses
-    await reconcileOrphanedMovingToolStatuses();
+    // Non-blocking background self-healing trigger
+    triggerBackgroundChallanReconciliation();
 
     const {
         page = 1,
@@ -1477,20 +1493,21 @@ export const getChallans = async (params = {}) => {
 
     const conditions = [];
 
-    if (search) {
+    if (search && String(search).trim()) {
+        const escapedSearch = String(search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         conditions.push({
             $or: [
-                { challanNumber: { $regex: search, $options: 'i' } },
-                { 'vendor.name': { $regex: search, $options: 'i' } },
-                { 'vendor.vendorCode': { $regex: search, $options: 'i' } },
-                { 'sourceStore.name': { $regex: search, $options: 'i' } },
-                { 'destinationStore.name': { $regex: search, $options: 'i' } },
-                { 'project.name': { $regex: search, $options: 'i' } },
-                { remarks: { $regex: search, $options: 'i' } },
-                { referenceDcNumber: { $regex: search, $options: 'i' } },
-                { transferFromDcNumber: { $regex: search, $options: 'i' } },
-                { transferredToDcNumber: { $regex: search, $options: 'i' } },
-                { siteCode: { $regex: search, $options: 'i' } }
+                { challanNumber: { $regex: escapedSearch, $options: 'i' } },
+                { 'vendor.name': { $regex: escapedSearch, $options: 'i' } },
+                { 'vendor.vendorCode': { $regex: escapedSearch, $options: 'i' } },
+                { 'sourceStore.name': { $regex: escapedSearch, $options: 'i' } },
+                { 'destinationStore.name': { $regex: escapedSearch, $options: 'i' } },
+                { 'project.name': { $regex: escapedSearch, $options: 'i' } },
+                { remarks: { $regex: escapedSearch, $options: 'i' } },
+                { referenceDcNumber: { $regex: escapedSearch, $options: 'i' } },
+                { transferFromDcNumber: { $regex: escapedSearch, $options: 'i' } },
+                { transferredToDcNumber: { $regex: escapedSearch, $options: 'i' } },
+                { siteCode: { $regex: escapedSearch, $options: 'i' } }
             ]
         });
     }
