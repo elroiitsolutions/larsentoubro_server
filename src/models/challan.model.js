@@ -104,8 +104,14 @@ const challanSchema = new mongoose.Schema({
     timestamps: true
 });
 
-// Indexes for fast challan tool lookup and reconciliation
+// Indexes for fast challan lookup, pagination, sorting and reconciliation
+challanSchema.index({ createdAt: -1 });
+challanSchema.index({ challanDate: -1 });
+challanSchema.index({ status: 1, createdAt: -1 });
+challanSchema.index({ challanType: 1, createdAt: -1 });
+challanSchema.index({ 'vendor._id': 1, createdAt: -1 });
 challanSchema.index({ 'items.tool': 1 });
+challanSchema.index({ 'items.tool': 1, challanType: 1, status: 1 });
 challanSchema.index({ challanType: 1, status: 1, createdAt: -1 });
 
 export const Challan = mongoose.model('Challan', challanSchema);
