@@ -37,7 +37,7 @@ const generateZodSchema = (fields) => {
         if (field.type !== 'number' && typeof fieldSchema.min === 'function') {
            if (v.type === 'minLength') fieldSchema = fieldSchema.min(v.value, { message: v.message });
            if (v.type === 'maxLength') fieldSchema = fieldSchema.max(v.value, { message: v.message });
-           if (v.type === 'email') fieldSchema = fieldSchema.email({ message: v.message });
+           if (v.type === 'email' || field.type === 'email') fieldSchema = fieldSchema.regex(/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+$/i, { message: v.message || "Email address must contain '@' and '.'" });
            if (v.type === 'url') fieldSchema = fieldSchema.url({ message: v.message });
            if (v.type === 'regex') fieldSchema = fieldSchema.regex(new RegExp(v.value), { message: v.message });
            // Alphanumeric support
@@ -62,23 +62,79 @@ const generateZodSchema = (fields) => {
   return z.object(schemaShape);
 };
 
+export const isPermanentRequiredField = (field) => {
+  const name = String(field?.name || field?.id || '').toLowerCase().trim();
+  const label = String(field?.label || '').toLowerCase().trim();
+
+  const isName = (
+    name === 'name' ||
+    label === 'name' ||
+    label.includes('vendor name') ||
+    label.includes('firm name') ||
+    label.includes('purchaser name') ||
+    label.includes('subcontractor name') ||
+    label.includes('company name') ||
+    label.includes('full name') ||
+    label.includes('supplier name') ||
+    label === 'subcontractor / vendor name' ||
+    label === 'scrap dealer / firm name' ||
+    label === 'supplier / purchaser name'
+  );
+
+  const isPrimaryPhone = (
+    name === 'contactphone' ||
+    name === 'phone' ||
+    name === 'phonenumber' ||
+    name === 'mobile' ||
+    name === 'mobilenumber' ||
+    label.includes('primary phone') ||
+    label.includes('mobile number') ||
+    label === 'phone number' ||
+    label.includes('primary phone number')
+  ) && !name.includes('alternate') && !label.includes('alternate');
+
+  return isName || isPrimaryPhone;
+};
+
 /**
  * [SHARED] createForm - Create or update a dynamic form definition schema
  */
 export const createForm = async (req, res, next) => {
   try {
     const { name, slug, description, fields = [] } = req.body;
+    let targetSlug = slug;
+    if (targetSlug === 'create-user' || targetSlug === 'user-form') {
+      targetSlug = 'user-admin-form';
+    }
+    if (targetSlug === 'vendor-form') {
+      targetSlug = 'subcontractor-form';
+    }
     
     // Ensure every field has a valid name, label, id, and sequential order
-    const sanitizedFields = (fields || []).map((f, idx) => ({
-      ...f,
-      order: idx,
-      name: (f.name && f.name.trim()) || (f.label && f.label.toLowerCase().replace(/[^a-z0-9_]/gi, '_')) || `field_${idx}`,
-      label: (f.label && f.label.trim()) || `Field ${idx + 1}`
-    }));
+    const sanitizedFields = (fields || []).map((f, idx) => {
+      const isPermanent = isPermanentRequiredField(f);
+      const isReq = isPermanent || Boolean(f.required || (Array.isArray(f.validations) && f.validations.some(v => v.type === 'required')));
+      let vals = f.validations ? [...f.validations] : [];
+      if (isReq) {
+        if (!vals.some(v => v.type === 'required')) {
+          vals.push({ type: 'required', message: `${(f.label || f.name).trim()} is required` });
+        }
+      } else {
+        vals = vals.filter(v => v.type !== 'required');
+      }
+
+      return {
+        ...f,
+        order: idx,
+        name: (f.name && f.name.trim()) || (f.label && f.label.toLowerCase().replace(/[^a-z0-9_]/gi, '_')) || `field_${idx}`,
+        label: (f.label && f.label.trim()) || `Field ${idx + 1}`,
+        required: isReq,
+        validations: vals
+      };
+    });
 
     const form = await FormDefinition.findOneAndUpdate(
-      { slug },
+      { slug: targetSlug },
       {
         $set: {
           name,
@@ -111,33 +167,24 @@ const seedDefaultForms = async () => {
         { id: 'email', name: 'email', label: 'Email Address', type: 'email', placeholder: 'e.g. rajesh.k@larsentoubro.com', validations: [{ type: 'required', message: 'Email is required' }, { type: 'email', message: 'Valid email required' }], order: 2 },
         { id: 'phonenumber', name: 'phonenumber', label: 'Phone Number', type: 'text', placeholder: 'e.g. +91 98765 43210', validations: [{ type: 'required', message: 'Phone number is required' }], order: 3 },
         { id: 'role', name: 'role', label: 'Account Role', type: 'select', options: [{ label: 'User', value: 'User' }, { label: 'Admin', value: 'Admin' }], validations: [{ type: 'required', message: 'Role is required' }], order: 4 },
-        { id: 'password', name: 'password', label: 'Account Password', type: 'password', placeholder: 'Minimum 6 characters', order: 5 },
-        { id: 'status', name: 'status', label: 'Account Status', type: 'select', options: [{ label: 'Active', value: 'Active' }, { label: 'Inactive', value: 'Inactive' }], order: 6 }
+        { id: 'status', name: 'status', label: 'Account Status', type: 'select', options: [{ label: 'Active', value: 'Active' }, { label: 'Inactive', value: 'Inactive' }], order: 5 }
       ]
     });
+  } else {
+    const hasPassword = userAdminForm.fields.some(f => f.name === 'password' || f.id === 'password');
+    if (hasPassword) {
+      userAdminForm.fields = userAdminForm.fields
+        .filter(f => f.name !== 'password' && f.id !== 'password')
+        .map((f, idx) => {
+          const raw = f.toObject ? f.toObject() : f;
+          return { ...raw, order: idx };
+        });
+      await userAdminForm.save();
+    }
   }
 
-  const vendorForm = await FormDefinition.findOne({ slug: 'vendor-form' });
-  if (!vendorForm) {
-    await FormDefinition.create({
-      name: 'Vendor Form',
-      slug: 'vendor-form',
-      description: 'Configure company entity details, contact person, designation, GST numbers, and vendor status.',
-      isActive: true,
-      fields: [
-        { id: 'name', name: 'name', label: 'Company / Vendor Name', type: 'text', placeholder: 'e.g. RADHE SWAMI CONSTRUCTION', validations: [{ type: 'required', message: 'Company Name is required' }], order: 0 },
-        { id: 'vendorCode', name: 'vendorCode', label: 'Vendor Code', type: 'text', placeholder: 'e.g. V-RSC01', validations: [{ type: 'required', message: 'Vendor Code is required' }], order: 1 },
-        { id: 'contactPerson', name: 'contactPerson', label: 'Manager / Contact Person', type: 'text', placeholder: 'e.g. Dinesh G', order: 2 },
-        { id: 'contactDesignation', name: 'contactDesignation', label: 'Contact Person Designation', type: 'text', placeholder: 'e.g. Site Manager', order: 3 },
-        { id: 'contactEmail', name: 'contactEmail', label: 'Company Email Address', type: 'email', placeholder: 'e.g. ybishnugarh@gmail.com', order: 4 },
-        { id: 'contactPhone', name: 'contactPhone', label: 'Primary Phone Number', type: 'text', placeholder: 'e.g. 9934110587', validations: [{ type: 'required', message: 'Primary phone is required' }], order: 5 },
-        { id: 'alternatePhone', name: 'alternatePhone', label: 'Alternate Phone Number', type: 'text', placeholder: 'e.g. 9876543210', order: 6 },
-        { id: 'address', name: 'address', label: 'Office / Site Address', type: 'textarea', placeholder: 'Enter registered address', order: 7 },
-        { id: 'gstNumber', name: 'gstNumber', label: 'GST / Tax Identification Number', type: 'text', placeholder: 'e.g. 27AAACL0140P1Z0', order: 8 },
-        { id: 'status', name: 'status', label: 'Vendor Status', type: 'select', options: [{ label: 'Active', value: 'Active' }, { label: 'Inactive', value: 'Inactive' }], order: 9 }
-      ]
-    });
-  }
+  // Permanently remove legacy/duplicate forms (create-user, user-form, vendor-form)
+  await FormDefinition.deleteMany({ slug: { $in: ['create-user', 'user-form', 'vendor-form'] } }).catch(() => {});
 
   let toolForm = await FormDefinition.findOne({ slug: 'tool-form' });
   if (!toolForm) {
@@ -199,7 +246,12 @@ const seedDefaultForms = async () => {
 export const getForms = async (req, res, next) => {
   try {
     await seedDefaultForms().catch(err => console.error("Error seeding default forms:", err));
-    const forms = await FormDefinition.find({ isActive: true }).select('-fields');
+    // Permanently remove legacy/duplicate forms (create-user, user-form, vendor-form)
+    await FormDefinition.deleteMany({ slug: { $in: ['create-user', 'user-form', 'vendor-form'] } }).catch(() => {});
+    const forms = await FormDefinition.find({
+      isActive: true,
+      slug: { $nin: ['create-user', 'user-form', 'vendor-form'] }
+    }).select('-fields');
     res.status(200).json({ success: true, data: forms });
   } catch (error) {
     next(error);
@@ -211,7 +263,15 @@ export const getForms = async (req, res, next) => {
  */
 export const getFormBySlug = async (req, res, next) => {
   try {
-    const { slug } = req.params;
+    let { slug } = req.params;
+    // Map legacy create-user or user-form to the unified user-admin-form
+    if (slug === 'create-user' || slug === 'user-form') {
+      slug = 'user-admin-form';
+    }
+    // Map legacy vendor-form to subcontractor-form
+    if (slug === 'vendor-form') {
+      slug = 'subcontractor-form';
+    }
     await seedDefaultForms().catch(err => console.error("Error seeding default forms:", err));
     const form = await FormDefinition.findOne({ slug, isActive: true });
     

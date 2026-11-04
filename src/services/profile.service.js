@@ -1,4 +1,5 @@
 import { Profile } from '../models/profile.model.js';
+import { FormDefinition } from '../models/formDefinition.model.js';
 import mongoose from 'mongoose';
 
 /**
@@ -92,10 +93,75 @@ export const generateProfileCode = async (profileType) => {
     return `${prefix}-${String(count + 1).padStart(4, '0')}`;
 };
 
+const validateProfileAgainstSchema = async (profileType, data) => {
+    const slug = profileType === 'Subcontractor'
+        ? 'subcontractor-form'
+        : profileType === 'ScrapDealer'
+        ? 'scrap-dealer-form'
+        : 'supplier-form';
+
+    const formDef = await FormDefinition.findOne({ slug, isActive: true });
+    if (!formDef || !Array.isArray(formDef.fields)) return;
+
+    for (const field of formDef.fields) {
+        const isReq = Boolean(
+            field.required ||
+            (Array.isArray(field.validations) && field.validations.some(v => v.type === 'required'))
+        );
+        if (!isReq) continue;
+
+        let val = data[field.name];
+        if (val === undefined || val === null || String(val).trim() === '') {
+            if (field.name === 'contactEmail' || field.name === 'email') {
+                val = data.contactEmail || data.email || (data.keyPersonnel && data.keyPersonnel[0]?.email);
+            } else if (field.name === 'contactPhone' || field.name === 'phone') {
+                val = data.contactPhone || data.phone || (data.keyPersonnel && data.keyPersonnel[0]?.phone);
+            } else if (field.name === 'contactPerson') {
+                val = data.contactPerson || (data.keyPersonnel && data.keyPersonnel[0]?.name);
+            } else if (field.name === 'contactDesignation' || field.name === 'designation') {
+                val = data.contactDesignation || (data.keyPersonnel && data.keyPersonnel[0]?.designation);
+            } else if (field.name === 'alternatePhone') {
+                val = data.alternatePhone || (data.keyPersonnel && data.keyPersonnel[0]?.alternatePhone);
+            } else if (data.customFields) {
+                if (typeof data.customFields.get === 'function') {
+                    val = data.customFields.get(field.name) || data.customFields.get(field.id);
+                } else {
+                    val = data.customFields[field.name] || data.customFields[field.id];
+                }
+            }
+        }
+
+        if (isReq && (val === undefined || val === null || String(val).trim() === '')) {
+            const msg = (field.validations && field.validations.find(v => v.type === 'required')?.message)
+                || `${field.label || field.name} is required`;
+            const err = new Error(msg);
+            err.status = 400;
+            throw err;
+        }
+
+        // Email format validation (@ and . domain check)
+        if (field.name === 'contactEmail' || field.name === 'email' || field.type === 'email') {
+            const emailVal = val || data.contactEmail || data.email || (data.keyPersonnel && data.keyPersonnel[0]?.email);
+            if (emailVal) {
+                const emailStr = String(emailVal).trim().toLowerCase();
+                const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+$/i;
+                if (!emailStr.includes('@') || !emailStr.includes('.') || !emailRegex.test(emailStr)) {
+                    const err = new Error('Invalid email format. Email must contain "@" and "." (e.g. name@domain.com).');
+                    err.status = 400;
+                    throw err;
+                }
+            }
+        }
+    }
+};
+
 export const createProfile = async (data, user = {}) => {
     if (!data.profileType || !['Subcontractor', 'ScrapDealer', 'Supplier'].includes(data.profileType)) {
         throw new Error('Valid profileType (Subcontractor, ScrapDealer, Supplier) is required');
     }
+
+    // Validate all required fields configured in the Form Definition (standard + custom fields)
+    await validateProfileAgainstSchema(data.profileType, data);
 
     let code = data.code ? data.code.trim().toUpperCase() : '';
     if (!code) {
@@ -135,11 +201,12 @@ export const updateProfile = async (id, data, user = null) => {
     // Prevent modification of profileType or password fields
     delete data.password;
 
+    const existing = await Profile.findById(id).lean();
+    if (!existing) {
+        throw new Error('Profile not found');
+    }
+
     if (user && user.role !== 'Admin') {
-        const existing = await Profile.findById(id).lean();
-        if (!existing) {
-            throw new Error('Profile not found');
-        }
         const isSelfCreated = existing.createdBy && (
             (existing.createdBy._id && existing.createdBy._id.toString() === user._id?.toString()) ||
             (existing.createdBy.email && user.email && existing.createdBy.email.toLowerCase() === user.email.toLowerCase()) ||
@@ -150,6 +217,10 @@ export const updateProfile = async (id, data, user = null) => {
             throw new Error('Unauthorized to modify this profile');
         }
     }
+
+    // Validate updated data against dynamic form schema
+    const profileType = existing.profileType || data.profileType;
+    await validateProfileAgainstSchema(profileType, { ...existing, ...data });
 
     const profile = await Profile.findByIdAndUpdate(id, data, { new: true, runValidators: true })
         .populate('projects', 'name projectCode location')

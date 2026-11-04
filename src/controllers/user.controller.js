@@ -41,11 +41,29 @@ const generateUserToken = (user) => {
  */
 const createUser = async (req, res, next) => {
     try {
-        const existingEmail = await userService.getUserByEmail(req.body.email);
+        const cleanEmail = (req.body.email || '').trim().toLowerCase();
+        const strictEmailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+$/i;
+        if (!cleanEmail || !strictEmailRegex.test(cleanEmail)) {
+            return res.status(400).json({
+                success: false,
+                message: "Email address must contain '@' and '.' (e.g. name@domain.com)."
+            });
+        }
+        const existingEmail = await userService.getUserByEmail(cleanEmail);
         if (existingEmail) {
             return res.status(400).json({ success: false, message: 'Email already registered' });
         }
 
+        if (!req.body.user_id || !String(req.body.user_id).trim()) {
+            let generatedId = 'EMP-' + Math.floor(10000 + Math.random() * 90000);
+            while (await User.findOne({ user_id: generatedId })) {
+                generatedId = 'EMP-' + Math.floor(10000 + Math.random() * 90000);
+            }
+            req.body.user_id = generatedId;
+        }
+        if (!req.body.name || !String(req.body.name).trim()) {
+            req.body.name = cleanEmail.split('@')[0] || 'User';
+        }
         const user = await userService.createUser(req.body);
         const userObj = user.toObject();
         delete userObj.password;
@@ -58,7 +76,7 @@ const createUser = async (req, res, next) => {
 
 const getUsers = async (req, res, next) => {
     try {
-        const users = await userService.getUsers(req.user);
+        const users = await userService.getUsers(req.user, req.query);
         res.status(200).json({ success: true, data: users });
     } catch (error) {
         next(error);
@@ -140,7 +158,15 @@ const createSubuser = async (req, res, next) => {
         if (req.user.role !== 'Admin' && !req.user.canCreateUser) {
             return res.status(403).json({ success: false, message: 'Access denied. You do not have permission to create subusers.' });
         }
-        const existingEmail = await userService.getUserByEmail(req.body.email);
+        const cleanEmail = (req.body.email || '').trim().toLowerCase();
+        const strictEmailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+$/i;
+        if (!cleanEmail || !strictEmailRegex.test(cleanEmail)) {
+            return res.status(400).json({
+                success: false,
+                message: "Email address must contain '@' and '.' (e.g. name@domain.com)."
+            });
+        }
+        const existingEmail = await userService.getUserByEmail(cleanEmail);
         if (existingEmail) {
             return res.status(400).json({ success: false, message: 'Email already registered' });
         }

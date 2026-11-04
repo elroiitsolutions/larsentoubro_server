@@ -7,9 +7,10 @@ export const validate = (schema) => (req, res, next) => {
         });
         next();
     } catch (error) {
+        const firstMessage = error.errors?.[0]?.message || 'Validation Error';
         res.status(400).json({
             success: false,
-            message: 'Validation Error',
+            message: firstMessage,
             errors: error.errors
         });
     }

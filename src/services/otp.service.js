@@ -80,8 +80,9 @@ export const findAccountByEmail = async (email, { populate = true } = {}) => {
 export const requestOtp = async (email, reqMeta = {}) => {
     const normalizedEmail = (email || '').trim().toLowerCase();
 
-    if (!normalizedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
-        const error = new Error('Please enter a valid email address.');
+    const strictEmailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+$/i;
+    if (!normalizedEmail || !strictEmailRegex.test(normalizedEmail)) {
+        const error = new Error("Email address must contain '@' and '.' (e.g. name@domain.com).");
         error.status = 400;
         throw error;
     }
@@ -245,15 +246,19 @@ export const verifyOtp = async (email, otpCode, reqMeta = {}) => {
         await otpDoc.save();
 
         // Record failed login log
-        await LoginLog.create({
-            userEmail: normalizedEmail,
-            role: 'Unknown',
-            status: 'Failed',
-            rejectionReason: `Invalid OTP attempt (${otpDoc.attempts}/${otpDoc.maxAttempts})`,
-            ipAddress: reqMeta.ip || '',
-            userAgent: reqMeta.userAgent || '',
-            deviceInfo: parseUserAgent(reqMeta.userAgent || '')
-        });
+        try {
+            await LoginLog.create({
+                userEmail: normalizedEmail,
+                role: 'Unknown',
+                status: 'Failed',
+                rejectionReason: `Invalid OTP attempt (${otpDoc.attempts}/${otpDoc.maxAttempts})`,
+                ipAddress: reqMeta.ip || '',
+                userAgent: reqMeta.userAgent || '',
+                deviceInfo: parseUserAgent(reqMeta.userAgent || '')
+            });
+        } catch (logErr) {
+            console.error('[OTP Log Error]:', logErr.message);
+        }
 
         if (remaining <= 0) {
             const error = new Error('Too many failed attempts. This code is now invalid. Please request a new code.');
