@@ -14,9 +14,15 @@ const loginLogSchema = new mongoose.Schema({
     },
     userEmail: {
         type: String,
-        required: true,
+        default: '',
         trim: true,
         lowercase: true,
+        index: true
+    },
+    userPhone: {
+        type: String,
+        trim: true,
+        default: null,
         index: true
     },
     role: {

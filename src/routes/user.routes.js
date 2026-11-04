@@ -33,6 +33,16 @@ router.post('/verify-otp', validate(userValidator.verifyOtp), userController.ver
 router.post('/guest-login', userController.guestLogin);
 
 /**
+ * [SHARED] POST /api/users/guest/request-otp - Send single-use SMS OTP for Guest access
+ */
+router.post('/guest/request-otp', userController.requestGuestOtp);
+
+/**
+ * [SHARED] POST /api/users/guest/verify-otp - Verify SMS OTP and issue scoped Guest JWT session
+ */
+router.post('/guest/verify-otp', userController.verifyGuestOtp);
+
+/**
  * [WEB] POST /api/users/logout - Logout user, revoke session, and clear cookie/token
  * Exclusively consumed by Web client auth service.
  */

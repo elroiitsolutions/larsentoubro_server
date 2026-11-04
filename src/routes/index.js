@@ -9,6 +9,7 @@ import profileRoutes from './profile.routes.js';
 import challanRoutes from './challan.routes.js';
 import reportRoutes from './report.routes.js';
 import dashboardRoutes from './dashboard.routes.js';
+import guestUserRoutes from './guestUser.routes.js';
 import { attachUser, restrictGuestAccess } from '../middleware/auth.middleware.js';
 
 const router = Router();
@@ -40,5 +41,6 @@ router.use('/profiles', profileRoutes);
 router.use('/challans', challanRoutes);
 router.use('/reports', reportRoutes);
 router.use('/dashboard', dashboardRoutes);
+router.use('/guest-users', guestUserRoutes);
 
 export default router;

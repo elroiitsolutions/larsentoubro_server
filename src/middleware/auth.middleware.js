@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import { env } from '../config/env.js';
 import { User } from '../models/user.model.js';
 import { Vendor } from '../models/vendor.model.js';
+import { GuestUser } from '../models/guestUser.model.js';
 
 /**
  * [SHARED] Authentication & RBAC Middleware
@@ -15,10 +16,22 @@ const getGuestUser = (decoded = {}) => ({
     id: decoded.id || 'guest_user_id',
     name: decoded.name || 'Guest User',
     email: decoded.email || 'guest@lnt.com',
+    phone: decoded.phone || null,
     role: 'Guest',
     user_id: 'GUEST-001',
     allowedPages: ['/qr-scanner']
 });
+
+const checkGuestExpired = async (user) => {
+    if (!user || user.role !== 'Guest' || !user.phone) return false;
+    try {
+        const guestDoc = await GuestUser.findOne({ phone: user.phone });
+        if (!guestDoc) return true;
+        if (guestDoc.status === 'Expired' || guestDoc.status === 'Disabled') return true;
+        if (new Date() >= new Date(guestDoc.expiresAt)) return true;
+    } catch (e) {}
+    return false;
+};
 
 const enforceSubuserHierarchy = async (user) => {
     if (!user || user.role !== 'Subuser' || !user.parentUser) {
@@ -126,6 +139,12 @@ export const authenticate = async (req, res, next) => {
     try {
         if (req.user) {
             if (req.user.role === 'Guest') {
+                if (await checkGuestExpired(req.user)) {
+                    return res.status(403).json({
+                        success: false,
+                        message: 'Your guest account has expired. Please contact your administrator to extend your access.'
+                    });
+                }
                 const path = req.originalUrl.split('?')[0];
                 const allowed = ['/api/users/me', '/api/tools/lookup-validity', '/api/users/guest-login'];
                 const isAllowed = allowed.some(p => path === p || path.startsWith('/api/tools/lookup-validity'));
@@ -210,6 +229,12 @@ export const authenticate = async (req, res, next) => {
         }
 
         if (user.role === 'Guest') {
+            if (await checkGuestExpired(user)) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Your guest account has expired. Please contact your administrator to extend your access.'
+                });
+            }
             const path = req.originalUrl.split('?')[0];
             const allowed = ['/api/users/me', '/api/tools/lookup-validity', '/api/users/guest-login'];
             const isAllowed = allowed.some(p => path === p || path.startsWith('/api/tools/lookup-validity'));

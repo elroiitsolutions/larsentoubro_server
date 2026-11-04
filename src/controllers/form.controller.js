@@ -43,7 +43,7 @@ const generateZodSchema = (fields) => {
            // Alphanumeric support
            if (v.type === 'alphanumeric') fieldSchema = fieldSchema.regex(/^[a-zA-Z0-9\s]*$/, { message: v.message || 'Must be alphanumeric' });
         }
-        if (field.type === 'number') {
+        if (field.type !== 'number' && field.type === 'number') {
            if (v.type === 'min') fieldSchema = fieldSchema.min(v.value, { message: v.message });
            if (v.type === 'max') fieldSchema = fieldSchema.max(v.value, { message: v.message });
         }
@@ -237,6 +237,23 @@ const seedDefaultForms = async () => {
       ];
       await toolForm.save();
     }
+  }
+
+  const guestUserForm = await FormDefinition.findOne({ slug: 'guest-user-form' });
+  if (!guestUserForm) {
+    await FormDefinition.create({
+      name: 'Guest User Form',
+      slug: 'guest-user-form',
+      description: 'Configure customizable profile fields and validation rules for guest equipment scanner accounts.',
+      isActive: true,
+      fields: [
+        { id: 'name', name: 'name', label: 'Full Name', type: 'text', placeholder: 'e.g. John Doe', validations: [{ type: 'required', message: 'Full Name is required' }], order: 0 },
+        { id: 'phone', name: 'phone', label: 'Phone Number', type: 'text', placeholder: 'e.g. 9876543210', validations: [{ type: 'required', message: 'Phone number is required' }], order: 1 },
+        { id: 'email', name: 'email', label: 'Email Address (Optional)', type: 'email', placeholder: 'e.g. guest@example.com', order: 2 },
+        { id: 'organization', name: 'organization', label: 'Organization / Contractor', type: 'text', placeholder: 'e.g. Third Party Inspection Agency', order: 3 },
+        { id: 'purpose', name: 'purpose', label: 'Purpose of Visit', type: 'textarea', placeholder: 'e.g. Site tool safety audit', order: 4 }
+      ]
+    });
   }
 };
 

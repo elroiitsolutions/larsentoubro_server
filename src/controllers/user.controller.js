@@ -841,6 +841,39 @@ const guestLogin = async (req, res, next) => {
     }
 };
 
+// [SHARED] Request SMS OTP for Guest access
+const requestGuestOtp = async (req, res, next) => {
+    try {
+        const clientIp = req.ip || req.socket.remoteAddress || '';
+        const userAgentHeader = req.headers['user-agent'] || '';
+        const result = await otpService.requestGuestPhoneOtp(req.body.phone, { ip: clientIp, userAgent: userAgentHeader });
+        return res.status(200).json(result);
+    } catch (error) {
+        const statusCode = error.status || 400;
+        return res.status(statusCode).json({
+            success: false,
+            message: error.message,
+            retryAfter: error.retryAfter
+        });
+    }
+};
+
+// [SHARED] Verify SMS OTP for Guest access
+const verifyGuestOtp = async (req, res, next) => {
+    try {
+        const clientIp = req.ip || req.socket.remoteAddress || '';
+        const userAgentHeader = req.headers['user-agent'] || '';
+        const result = await otpService.verifyGuestPhoneOtp(req.body.phone, req.body.otp, { ip: clientIp, userAgent: userAgentHeader });
+        return res.status(200).json(result);
+    } catch (error) {
+        const statusCode = error.status || 400;
+        return res.status(statusCode).json({
+            success: false,
+            message: error.message
+        });
+    }
+};
+
 export const userController = {
     // [SHARED] Core User Management
     createUser,
@@ -859,6 +892,8 @@ export const userController = {
     requestOtp,
     verifyOtp,
     guestLogin,
+    requestGuestOtp,
+    verifyGuestOtp,
     checkLoginRequestStatus,
     getPendingLoginRequests,
     approveLoginRequest,

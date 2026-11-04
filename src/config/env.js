@@ -12,5 +12,8 @@ export const env = {
     SMTP_SECURE: process.env.SMTP_SECURE === 'true',
     SMTP_USER: process.env.SMTP_USER || '',
     SMTP_PASS: process.env.SMTP_PASS || '',
-    SMTP_FROM: process.env.SMTP_FROM || 'L&T Equipment Portal <no-reply@larsentoubro.com>'
+    SMTP_FROM: process.env.SMTP_FROM || 'L&T Equipment Portal <no-reply@larsentoubro.com>',
+    SMS_API_KEY: process.env.SMS_API_KEY || '',
+    SMS_PROVIDER: process.env.SMS_PROVIDER || 'mock',
+    SMS_SENDER_ID: process.env.SMS_SENDER_ID || ''
 };

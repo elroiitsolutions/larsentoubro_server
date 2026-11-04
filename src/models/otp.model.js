@@ -3,10 +3,21 @@ import mongoose from 'mongoose';
 const otpSchema = new mongoose.Schema({
     email: {
         type: String,
-        required: true,
+        required: false,
         lowercase: true,
         trim: true,
         index: true
+    },
+    phone: {
+        type: String,
+        required: false,
+        trim: true,
+        index: true
+    },
+    purpose: {
+        type: String,
+        enum: ['LOGIN', 'GUEST_ACCESS'],
+        default: 'LOGIN'
     },
     otp: {
         type: String,
@@ -47,6 +58,7 @@ const otpSchema = new mongoose.Schema({
 // TTL index to automatically purge expired OTP documents
 otpSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 otpSchema.index({ email: 1, isUsed: 1, expiresAt: 1 });
+otpSchema.index({ phone: 1, isUsed: 1, expiresAt: 1 });
 
 export const Otp = mongoose.model('Otp', otpSchema);
 export default Otp;
