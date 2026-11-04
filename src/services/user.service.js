@@ -36,6 +36,16 @@ const enforcePagePermissions = (data, existingRole = 'User') => {
 
 const createUser = async (userData) => {
     enforcePagePermissions(userData, userData.role || 'User');
+    if (!userData.user_id || !String(userData.user_id).trim()) {
+        let generatedId = 'EMP-' + Math.floor(10000 + Math.random() * 90000);
+        while (await User.findOne({ user_id: generatedId })) {
+            generatedId = 'EMP-' + Math.floor(10000 + Math.random() * 90000);
+        }
+        userData.user_id = generatedId;
+    }
+    if (!userData.name || !String(userData.name).trim()) {
+        userData.name = (userData.email ? String(userData.email).split('@')[0] : 'User');
+    }
     const user = new User(userData);
     await user.save();
     return await User.findById(user._id)
@@ -86,11 +96,22 @@ const createSubuser = async (subuserData, actor) => {
         .select('-__v -password');
 };
 
-const getUsers = async (actor = null) => {
+const getUsers = async (actor = null, query = {}) => {
     const filter = {};
     if (actor && actor.role !== 'Admin') {
         // Data isolation: non-admin users only see subusers created by them
         filter.parentUser = actor._id;
+    } else {
+        if (query.type === 'internal' || query.type === 'organization') {
+            filter.role = { $in: ['Admin', 'User'] };
+        } else if (query.role) {
+            filter.role = query.role;
+        } else if (query.includeVendors === 'true') {
+            // Keep all roles
+        } else {
+            // Exclude Vendors by default (Vendors belong to Subcontractor/Vendor Profiles)
+            filter.role = { $nin: ['Vendor'] };
+        }
     }
 
     return await User.find(filter)
@@ -236,9 +257,12 @@ const deleteUser = async (id, actor = null) => {
         if (user.role === 'Subuser' && String(user.parentUser) !== String(actor._id)) {
             throw new Error('Access denied. You can only delete your own subusers.');
         }
+        if (user.role !== 'Subuser') {
+            throw new Error('Access denied. You can only delete your own subusers.');
+        }
     }
 
-    // If deleting a parent user, cascade delete or unlink child subusers
+    // If deleting a parent user, cascade delete child subusers
     await User.deleteMany({ parentUser: id });
 
     return await User.findByIdAndDelete(id);

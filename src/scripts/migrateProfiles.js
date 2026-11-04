@@ -111,6 +111,22 @@ export const migrateProfilesAndForms = async () => {
             }
         }
 
+        // Clean up password field from User / Admin Form if present
+        const userAdminForm = await FormDefinition.findOne({ slug: 'user-admin-form' });
+        if (userAdminForm) {
+            const hasPassword = userAdminForm.fields.some(f => f.name === 'password' || f.id === 'password');
+            if (hasPassword) {
+                userAdminForm.fields = userAdminForm.fields
+                    .filter(f => f.name !== 'password' && f.id !== 'password')
+                    .map((f, idx) => ({ ...(f.toObject ? f.toObject() : f), order: idx }));
+                await userAdminForm.save();
+                console.log('[Migration] Cleaned up password field from User / Admin Form.');
+            }
+        }
+
+        // Purge any obsolete/legacy separate create-user or user-form definitions
+        await FormDefinition.deleteMany({ slug: { $in: ['create-user', 'user-form'] } });
+
         console.log('[Migration] Profile migration & Form definitions check completed.');
     } catch (err) {
         console.error('[Migration] Error during profile migration:', err);
