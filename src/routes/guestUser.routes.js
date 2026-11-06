@@ -16,6 +16,7 @@ router.post('/', guestUserController.createGuestUser);
 router.get('/', guestUserController.getGuestUsers);
 router.get('/:id', guestUserController.getGuestUserById);
 router.put('/:id', guestUserController.updateGuestUser);
+router.delete('/:id', guestUserController.deleteGuestUser);
 
 // Extension actions
 router.post('/:id/extend', guestUserController.extendGuestUser);

@@ -77,6 +77,19 @@ export const createGuestUser = async (data, actor) => {
     }
 
     // Check if guest user already exists
+    const standardKeys = new Set([
+        'name', 'phone', 'formattedPhone', 'email', 'organization', 'purpose',
+        'status', 'expiresAt', 'initialDurationDays', 'totalDurationDays',
+        'customFields', 'startDate', 'notificationStatus', 'notificationSentAt',
+        'rejectionReason', 'lastLoginAt', 'createdBy', 'extensionHistory', '_id', 'id'
+    ]);
+    const mergedCustomFields = { ...(data.customFields || {}) };
+    for (const [k, v] of Object.entries(data)) {
+        if (!standardKeys.has(k) && v !== undefined) {
+            mergedCustomFields[k] = v;
+        }
+    }
+
     const existing = await GuestUser.findOne({ phone: clean10 });
     if (existing) {
         if (existing.status === 'Active' && new Date() < new Date(existing.expiresAt)) {
@@ -101,9 +114,7 @@ export const createGuestUser = async (data, actor) => {
             email: actor.email || '',
             role: actor.role || 'User'
         };
-        if (data.customFields) {
-            existing.customFields = data.customFields;
-        }
+        existing.customFields = mergedCustomFields;
         await existing.save();
 
         await logAudit(actor, 'GUEST_USER_REACTIVATED', {
@@ -136,7 +147,7 @@ export const createGuestUser = async (data, actor) => {
             email: actor.email || '',
             role: actor.role || 'User'
         },
-        customFields: data.customFields || {}
+        customFields: mergedCustomFields
     });
 
     await guestUser.save();
@@ -208,8 +219,14 @@ export const getGuestUsers = async (query = {}, actor) => {
             }
         }
 
+        const customObj = u.customFields instanceof Map
+            ? Object.fromEntries(u.customFields)
+            : (u.customFields || {});
+
         return {
             ...u,
+            customFields: customObj,
+            ...customObj,
             computedStatus,
             daysRemaining: Math.max(0, diffDays),
             hoursRemaining: Math.max(0, diffHours),
@@ -229,7 +246,14 @@ export const getGuestUserById = async (id) => {
         error.status = 404;
         throw error;
     }
-    return user;
+    const customObj = user.customFields instanceof Map
+        ? Object.fromEntries(user.customFields)
+        : (user.customFields || {});
+    return {
+        ...user,
+        customFields: customObj,
+        ...customObj
+    };
 };
 
 /**
@@ -251,6 +275,19 @@ export const updateGuestUser = async (id, data, actor) => {
         guestUser.status = data.status;
     }
 
+    if (data.expiresAt) {
+        const d = new Date(data.expiresAt);
+        if (!isNaN(d.getTime())) {
+            if (typeof data.expiresAt === 'string' && data.expiresAt.length === 10) {
+                d.setHours(23, 59, 59, 999);
+            }
+            guestUser.expiresAt = d;
+            if (d > new Date() && guestUser.status === 'Expired') {
+                guestUser.status = 'Active';
+            }
+        }
+    }
+
     if (data.phone) {
         const { clean10, e164, isValid } = normalizeIndianPhoneNumber(data.phone);
         if (!isValid) {
@@ -270,9 +307,25 @@ export const updateGuestUser = async (id, data, actor) => {
         }
     }
 
-    if (data.customFields) {
-        guestUser.customFields = data.customFields;
+    const standardKeys = new Set([
+        'name', 'phone', 'formattedPhone', 'email', 'organization', 'purpose',
+        'status', 'expiresAt', 'initialDurationDays', 'totalDurationDays',
+        'customFields', 'startDate', 'notificationStatus', 'notificationSentAt',
+        'rejectionReason', 'lastLoginAt', 'createdBy', 'extensionHistory', '_id', 'id'
+    ]);
+    const mergedCustomFields = guestUser.customFields instanceof Map
+        ? Object.fromEntries(guestUser.customFields)
+        : { ...(guestUser.customFields || {}) };
+
+    if (data.customFields && typeof data.customFields === 'object') {
+        Object.assign(mergedCustomFields, data.customFields);
     }
+    for (const [k, v] of Object.entries(data)) {
+        if (!standardKeys.has(k) && v !== undefined) {
+            mergedCustomFields[k] = v;
+        }
+    }
+    guestUser.customFields = mergedCustomFields;
 
     await guestUser.save();
 
@@ -290,16 +343,7 @@ export const updateGuestUser = async (id, data, actor) => {
  * Confirms and extends a guest user's access duration.
  * Durations: 15 days, 45 days, 1 month (30d), 3 months (90d), 6 months (180d).
  */
-export const extendGuestUserAccess = async (id, durationKey, actor) => {
-    const days = DURATION_DAYS_MAP[durationKey];
-    const label = DURATION_LABELS_MAP[durationKey];
-
-    if (!days || !label) {
-        const error = new Error('Invalid extension duration. Options: 15 days, 45 days, 1 month, 3 months, 6 months.');
-        error.status = 400;
-        throw error;
-    }
-
+export const extendGuestUserAccess = async (id, durationKey, actor, customDate) => {
     const guestUser = await GuestUser.findById(id);
     if (!guestUser) {
         const error = new Error('Guest user not found.');
@@ -309,11 +353,40 @@ export const extendGuestUserAccess = async (id, durationKey, actor) => {
 
     const previousExpiresAt = new Date(guestUser.expiresAt);
     const now = new Date();
-    const durationMs = days * 24 * 60 * 60 * 1000;
+    let newExpiresAt;
+    let days;
+    let label;
 
-    // If currently active and unexpired, append to remaining time; if already expired, add from now
-    const baseTime = previousExpiresAt > now ? previousExpiresAt.getTime() : now.getTime();
-    const newExpiresAt = new Date(baseTime + durationMs);
+    if (customDate) {
+        newExpiresAt = new Date(customDate);
+        if (isNaN(newExpiresAt.getTime())) {
+            const error = new Error('Invalid custom extension date.');
+            error.status = 400;
+            throw error;
+        }
+        if (typeof customDate === 'string' && customDate.length === 10) {
+            newExpiresAt.setHours(23, 59, 59, 999);
+        }
+        const baseTime = previousExpiresAt > now ? previousExpiresAt.getTime() : now.getTime();
+        const diffMs = newExpiresAt.getTime() - baseTime;
+        days = Math.max(1, Math.round(diffMs / (24 * 60 * 60 * 1000)));
+        label = durationKey && DURATION_LABELS_MAP[durationKey]
+            ? DURATION_LABELS_MAP[durationKey]
+            : `${days} days`;
+    } else {
+        days = DURATION_DAYS_MAP[durationKey];
+        label = DURATION_LABELS_MAP[durationKey];
+
+        if (!days || !label) {
+            const error = new Error('Invalid extension duration. Options: 15 days, 45 days, 1 month, 3 months, 6 months.');
+            error.status = 400;
+            throw error;
+        }
+
+        const durationMs = days * 24 * 60 * 60 * 1000;
+        const baseTime = previousExpiresAt > now ? previousExpiresAt.getTime() : now.getTime();
+        newExpiresAt = new Date(baseTime + durationMs);
+    }
 
     guestUser.extensionHistory.push({
         extendedAt: now,
@@ -401,11 +474,38 @@ export const getExpiringGuestNotifications = async (actor) => {
     });
 };
 
+/**
+ * Delete a guest user permanently.
+ */
+export const deleteGuestUser = async (id, actor) => {
+    const guestUser = await GuestUser.findById(id);
+    if (!guestUser) {
+        const error = new Error('Guest user not found.');
+        error.status = 404;
+        throw error;
+    }
+
+    // Role check: non-admin can only delete guest users they created
+    if (actor && actor.role !== 'Admin') {
+        const creatorId = guestUser.createdBy?._id?.toString() || guestUser.createdBy?.id?.toString();
+        const actorId = actor._id?.toString() || actor.id?.toString();
+        if (creatorId && creatorId !== actorId) {
+            const error = new Error('You do not have permission to delete this guest user.');
+            error.status = 403;
+            throw error;
+        }
+    }
+
+    await GuestUser.findByIdAndDelete(id);
+    return { success: true, message: 'Guest user deleted successfully.' };
+};
+
 export default {
     createGuestUser,
     getGuestUsers,
     getGuestUserById,
     updateGuestUser,
+    deleteGuestUser,
     extendGuestUserAccess,
     rejectGuestUserExtension,
     getExpiringGuestNotifications

@@ -56,14 +56,14 @@ export const updateGuestUser = async (req, res, next) => {
 
 export const extendGuestUser = async (req, res, next) => {
     try {
-        const { duration } = req.body;
-        if (!duration) {
+        const { duration, customDate } = req.body;
+        if (!duration && !customDate) {
             return res.status(400).json({
                 success: false,
-                message: 'Duration is required (e.g. 15 days, 45 days, 1 month, 3 months, 6 months).'
+                message: 'Duration or customDate is required.'
             });
         }
-        const extended = await guestUserService.extendGuestUserAccess(req.params.id, duration, req.user);
+        const extended = await guestUserService.extendGuestUserAccess(req.params.id, duration, req.user, customDate);
         res.status(200).json({
             success: true,
             message: `Guest account access extended successfully.`,
@@ -100,11 +100,24 @@ export const getExpiringNotifications = async (req, res, next) => {
     }
 };
 
+export const deleteGuestUser = async (req, res, next) => {
+    try {
+        await guestUserService.deleteGuestUser(req.params.id, req.user);
+        res.status(200).json({
+            success: true,
+            message: 'Guest user deleted successfully.'
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
 export default {
     createGuestUser,
     getGuestUsers,
     getGuestUserById,
     updateGuestUser,
+    deleteGuestUser,
     extendGuestUser,
     rejectGuestUser,
     getExpiringNotifications
