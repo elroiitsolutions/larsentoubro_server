@@ -50,7 +50,7 @@ router.delete('/:id', requirePagePermission('/profiles'), profileController.dele
  * [WEB] POST /api/profiles/:id/documents - Upload document attachments to profile
  * Exclusively used by Web profile manager UI.
  */
-router.post('/:id/documents', requirePagePermission('/profiles'), profileController.upload.single('file'), profileController.uploadDocument);
+router.post('/:id/documents', requirePagePermission('/profiles'), profileController.resolveProfileUploadDir, profileController.upload.single('file'), profileController.uploadDocument);
 
 /**
  * [WEB] DELETE /api/profiles/:id/documents/:docId - Remove document attachment from profile

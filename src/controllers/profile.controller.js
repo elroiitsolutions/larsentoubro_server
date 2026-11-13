@@ -7,16 +7,63 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Ensure upload directory exists
+// Base and profile-type specific upload directories
 const uploadsDir = path.join(__dirname, '../../uploads/profile-documents');
-if (!fs.existsSync(uploadsDir)) {
-    fs.mkdirSync(uploadsDir, { recursive: true });
-}
+const vendorUploadsDir = path.join(uploadsDir, 'vendor-documents');
+const scrapDealerUploadsDir = path.join(uploadsDir, 'scrap-dealer-documents');
+const supplierUploadsDir = path.join(uploadsDir, 'supplier-documents');
+
+// Ensure all upload directories exist
+[uploadsDir, vendorUploadsDir, scrapDealerUploadsDir, supplierUploadsDir].forEach(dir => {
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+});
+
+/**
+ * Resolves the destination directory based on the profile type
+ */
+export const getProfileUploadDir = (profileType) => {
+    const normalized = (profileType || '').toLowerCase();
+    if (normalized.includes('vendor') || normalized === 'subcontractor') {
+        return vendorUploadsDir;
+    }
+    if (normalized.includes('scrap') || normalized === 'scrapdealer') {
+        return scrapDealerUploadsDir;
+    }
+    if (normalized.includes('supplier')) {
+        return supplierUploadsDir;
+    }
+    return uploadsDir;
+};
+
+/**
+ * Pre-upload middleware to resolve profileType by looking up the profile before Multer writes to disk
+ */
+export const resolveProfileUploadDir = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        if (id && !req.profileType) {
+            const profile = await profileService.getProfileById(id);
+            if (profile) {
+                req.profileType = profile.profileType;
+            }
+        }
+        next();
+    } catch (err) {
+        next(err);
+    }
+};
 
 // Multer Storage Configuration
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
-        cb(null, uploadsDir);
+        const type = req.profileType || req.query?.profileType || req.query?.type || req.body?.profileType;
+        const targetDir = getProfileUploadDir(type);
+        if (!fs.existsSync(targetDir)) {
+            fs.mkdirSync(targetDir, { recursive: true });
+        }
+        cb(null, targetDir);
     },
     filename: (req, file, cb) => {
         const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
@@ -156,11 +203,31 @@ export const deleteDocument = async (req, res, next) => {
         const profile = await profileService.getProfileById(id);
 
         const targetDoc = profile.documents.find(d => d._id.toString() === docId.toString());
-        if (targetDoc && targetDoc.filePath && fs.existsSync(targetDoc.filePath)) {
-            try {
-                fs.unlinkSync(targetDoc.filePath);
-            } catch (fsErr) {
-                console.error("Error removing file from disk:", fsErr);
+        if (targetDoc) {
+            if (targetDoc.filePath && fs.existsSync(targetDoc.filePath)) {
+                try {
+                    fs.unlinkSync(targetDoc.filePath);
+                } catch (fsErr) {
+                    console.error("Error removing file from disk:", fsErr);
+                }
+            } else if (targetDoc.fileName) {
+                // Search candidate directories
+                const candidatePaths = [
+                    path.join(vendorUploadsDir, targetDoc.fileName),
+                    path.join(scrapDealerUploadsDir, targetDoc.fileName),
+                    path.join(supplierUploadsDir, targetDoc.fileName),
+                    path.join(uploadsDir, targetDoc.fileName)
+                ];
+                for (const candidate of candidatePaths) {
+                    if (fs.existsSync(candidate)) {
+                        try {
+                            fs.unlinkSync(candidate);
+                            break;
+                        } catch (fsErr) {
+                            console.error("Error removing file from disk:", fsErr);
+                        }
+                    }
+                }
             }
         }
 
@@ -173,18 +240,26 @@ export const deleteDocument = async (req, res, next) => {
 
 /**
  * [WEB] downloadDocumentFile - Serve uploaded document binary from disk
- * Exclusively used by Web application document viewer.
+ * Searches across type-specific folders (vendor-documents, scrap-dealer-documents, supplier-documents)
+ * and falls back to root profile-documents for full backward compatibility.
  */
 export const downloadDocumentFile = async (req, res, next) => {
     try {
         const { filename } = req.params;
-        const filePath = path.join(uploadsDir, filename);
+        const candidatePaths = [
+            path.join(vendorUploadsDir, filename),
+            path.join(scrapDealerUploadsDir, filename),
+            path.join(supplierUploadsDir, filename),
+            path.join(uploadsDir, filename)
+        ];
 
-        if (!fs.existsSync(filePath)) {
-            return res.status(404).json({ success: false, message: 'File not found on server' });
+        for (const candidate of candidatePaths) {
+            if (fs.existsSync(candidate)) {
+                return res.sendFile(candidate);
+            }
         }
 
-        res.sendFile(filePath);
+        return res.status(404).json({ success: false, message: 'File not found on server' });
     } catch (error) {
         next(error);
     }

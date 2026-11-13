@@ -57,6 +57,28 @@ const buildTokenCondition = (tok) => {
     if (!cleanTok) return [];
     const escaped = cleanTok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const isNumeric = /^\d+$/.test(cleanTok);
+    const lowerTok = cleanTok.toLowerCase();
+
+    // Exact status keyword matching (Available, Moving, Missing, Repair, Scrap)
+    if (['available', 'moving', 'missing', 'repair', 'scrap'].includes(lowerTok)) {
+        return [{ status: { $regex: `^${escaped}$`, $options: 'i' } }];
+    }
+
+    // Print status keyword matching (Printed, Unprint, Unprinted, Not Printed)
+    if (lowerTok === 'printed') {
+        return [{ isPrinted: true }];
+    } else if (['unprint', 'unprinted', 'not printed'].includes(lowerTok)) {
+        return [{ isPrinted: { $ne: true } }];
+    }
+
+    // Expiry status keyword matching (Already Expired, Expired within 3 Months)
+    if (lowerTok === 'expired' || lowerTok === 'already expired' || lowerTok === 'already_expired') {
+        return [{ nextInspectionDueDate: { $lt: new Date() } }];
+    } else if (['expiring soon', 'expiry soon', 'expiring', 'expires soon', 'soon', 'expired within 3 months', 'expiring within 3 months'].includes(lowerTok)) {
+        const now = new Date();
+        const threeMonthsAhead = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
+        return [{ nextInspectionDueDate: { $gte: now, $lte: threeMonthsAhead } }];
+    }
 
     const conds = [];
 
@@ -80,6 +102,7 @@ const buildTokenCondition = (tok) => {
         conds.push({ toolCode: { $regex: `^${escaped}`, $options: 'i' } });
         conds.push({ description: { $regex: escaped, $options: 'i' } });
         conds.push({ toolType: { $regex: escaped, $options: 'i' } });
+        conds.push({ status: { $regex: escaped, $options: 'i' } });
     }
 
     return conds;
@@ -132,11 +155,11 @@ const applyAdvancedFilters = (query, params) => {
         const strStatus = String(params.status).trim();
         if (strStatus.toLowerCase() === 'printed') {
             query.isPrinted = true;
-        } else if (strStatus.toLowerCase() === 'not printed' || strStatus.toLowerCase() === 'unprinted') {
+        } else if (strStatus.toLowerCase() === 'not printed' || strStatus.toLowerCase() === 'unprinted' || strStatus.toLowerCase() === 'unprint') {
             query.isPrinted = { $ne: true };
         } else {
             const escapedStat = strStatus.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            query.status = { $regex: escapedStat, $options: 'i' };
+            query.status = { $regex: `^${escapedStat}$`, $options: 'i' };
         }
     }
 
@@ -145,8 +168,26 @@ const applyAdvancedFilters = (query, params) => {
         const strVal = String(printVal).trim().toLowerCase();
         if (strVal === 'printed' || strVal === 'true') {
             query.isPrinted = true;
-        } else if (strVal === 'not printed' || strVal === 'unprinted' || strVal === 'false') {
+        } else if (strVal === 'not printed' || strVal === 'unprinted' || strVal === 'unprint' || strVal === 'false') {
             query.isPrinted = { $ne: true };
+        }
+    }
+
+    // Expiry / Validity Status filter (Expired, Expiring Soon within 3 months, Valid)
+    const expiryStatus = params.expiryStatus || params.expiryFilter || params.validityStatus;
+    if (expiryStatus && expiryStatus !== 'All' && String(expiryStatus).trim() !== '') {
+        const strVal = String(expiryStatus).trim().toLowerCase();
+        const now = new Date();
+        const threeMonthsAhead = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
+
+        if (strVal === 'expired' || strVal === 'already_expired' || strVal === 'already expired') {
+            query.nextInspectionDueDate = { $lt: now };
+        } else if (strVal === 'expiring_soon' || strVal === 'expiry_soon' || strVal === 'expiring' || strVal === 'soon' || strVal === 'expired_within_3_months' || strVal === 'expiring_within_3_months') {
+            query.nextInspectionDueDate = { $gte: now, $lte: threeMonthsAhead };
+        } else if (strVal === 'valid' || strVal === 'valid_tools') {
+            query.nextInspectionDueDate = { $gt: threeMonthsAhead };
+        } else if (strVal === 'all_valid' || strVal === 'not_expired') {
+            query.nextInspectionDueDate = { $gte: now };
         }
     }
 
@@ -514,13 +555,17 @@ const getToolsByStoreId = async (storeId, params = {}) => {
         (params.search && String(params.search).trim()) ||
         (params.category && params.category !== 'All') ||
         (params.status && params.status !== 'All') ||
-        (params.printStatus && params.printStatus !== 'All')
+        (params.printStatus && params.printStatus !== 'All') ||
+        (params.expiryStatus && params.expiryStatus !== 'All') ||
+        (params.expiryFilter && params.expiryFilter !== 'All')
     );
 
     let statusCountsPromise;
     if (cachedStatus && (cachedStatus.expiresAt > Date.now() || hasSearchOrFilters)) {
         statusCountsPromise = Promise.resolve([cachedStatus.counts]);
     } else {
+        const now = new Date();
+        const threeMonthsAhead = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
         statusCountsPromise = Tool.aggregate([
             { $match: storeMatchFilter },
             {
@@ -531,7 +576,22 @@ const getToolsByStoreId = async (storeId, params = {}) => {
                     moving: { $sum: { $cond: [{ $in: ['$status', ['Moving', 'In Transit']] }, 1, 0] } },
                     repair: { $sum: { $cond: [{ $in: ['$status', ['Repair', 'Under Repair', 'Damaged/Repair']] }, 1, 0] } },
                     printed: { $sum: { $cond: [{ $eq: ['$isPrinted', true] }, 1, 0] } },
-                    unprinted: { $sum: { $cond: [{ $ne: ['$isPrinted', true] }, 1, 0] } }
+                    unprinted: { $sum: { $cond: [{ $ne: ['$isPrinted', true] }, 1, 0] } },
+                    expired: { $sum: { $cond: [{ $and: [{ $ne: ['$nextInspectionDueDate', null] }, { $lt: ['$nextInspectionDueDate', now] }] }, 1, 0] } },
+                    expiringSoon: {
+                        $sum: {
+                            $cond: [
+                                {
+                                    $and: [
+                                        { $gte: ['$nextInspectionDueDate', now] },
+                                        { $lte: ['$nextInspectionDueDate', threeMonthsAhead] }
+                                    ]
+                                },
+                                1,
+                                0
+                            ]
+                        }
+                    }
                 }
             }
         ]).then(res => {
@@ -542,7 +602,9 @@ const getToolsByStoreId = async (storeId, params = {}) => {
                     moving: res[0].moving || 0,
                     repair: res[0].repair || 0,
                     printed: res[0].printed || 0,
-                    unprinted: res[0].unprinted || 0
+                    unprinted: res[0].unprinted || 0,
+                    expired: res[0].expired || 0,
+                    expiringSoon: res[0].expiringSoon || 0
                 };
                 statusCountsCache.set(storeKey, { counts, expiresAt: Date.now() + 60 * 1000 });
                 return [counts];
@@ -569,8 +631,10 @@ const getToolsByStoreId = async (storeId, params = {}) => {
         moving: statusAgg[0].moving || 0,
         repair: statusAgg[0].repair || 0,
         printed: statusAgg[0].printed || 0,
-        unprinted: statusAgg[0].unprinted || 0
-    } : { all: total, available: 0, moving: 0, repair: 0, printed: 0, unprinted: 0 };
+        unprinted: statusAgg[0].unprinted || 0,
+        expired: statusAgg[0].expired || 0,
+        expiringSoon: statusAgg[0].expiringSoon || 0
+    } : { all: total, available: 0, moving: 0, repair: 0, printed: 0, unprinted: 0, expired: 0, expiringSoon: 0 };
 
     return {
         data,
@@ -599,6 +663,80 @@ const processToolData = (toolData) => {
     return data;
 };
 
+export const computeToolExpiryDate = (data) => {
+    if (!data) return null;
+
+    // 1. Resolve start date (validationStartDate -> dateOfSupply -> createdAt -> now)
+    const rawDateStr = data.validationStartDate ||
+        (data.customFields && typeof data.customFields.get === 'function' ? data.customFields.get('validationStartDate') : data.customFields?.validationStartDate) ||
+        data.dateOfSupply ||
+        (data.customFields && typeof data.customFields.get === 'function' ? data.customFields.get('dateOfSupply') : data.customFields?.dateOfSupply) ||
+        data.createdAt;
+
+    let startDate = null;
+    if (rawDateStr) {
+        if (rawDateStr instanceof Date && !isNaN(rawDateStr.getTime())) {
+            startDate = new Date(rawDateStr);
+        } else {
+            const str = String(rawDateStr).trim();
+            if (!isNaN(Number(str)) && Number(str) > 30000 && Number(str) < 100000 && !str.includes('/') && !str.includes('-')) {
+                const excelEpoch = new Date(Date.UTC(1899, 11, 30));
+                const dateObj = new Date(excelEpoch.getTime() + Number(str) * 86400000);
+                if (!isNaN(dateObj.getTime())) {
+                    startDate = dateObj;
+                }
+            } else {
+                const dmy = str.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+                if (dmy) {
+                    const p1 = parseInt(dmy[1], 10);
+                    const p2 = parseInt(dmy[2], 10);
+                    const y = parseInt(dmy[3], 10);
+                    if (p1 > 12) {
+                        startDate = new Date(y, p2 - 1, p1);
+                    } else if (p2 > 12) {
+                        startDate = new Date(y, p1 - 1, p2);
+                    } else {
+                        startDate = new Date(y, p2 - 1, p1);
+                    }
+                } else {
+                    const parsed = new Date(str);
+                    if (!isNaN(parsed.getTime())) {
+                        startDate = parsed;
+                    }
+                }
+            }
+        }
+    }
+    if (!startDate || isNaN(startDate.getTime())) {
+        startDate = new Date();
+    }
+
+    // 2. Resolve validity period years
+    let rawValidity = data.validityPeriod ||
+        data.validation ||
+        (data.customFields && typeof data.customFields.get === 'function' ? (data.customFields.get('validation') || data.customFields.get('validityPeriod')) : (data.customFields?.validation || data.customFields?.validityPeriod));
+    if (typeof rawValidity === 'string') rawValidity = rawValidity.trim();
+    let years = null;
+    if (rawValidity && rawValidity !== 'N/A' && rawValidity !== '-' && rawValidity !== '') {
+        const match = String(rawValidity).match(/(\d+)/);
+        if (match) {
+            years = parseInt(match[1], 10);
+        }
+    }
+    if (years === null) {
+        const purchaserStr = String(data.purchaserName || (data.customFields && typeof data.customFields.get === 'function' ? data.customFields.get('purchaserName') : data.customFields?.purchaserName) || '').trim().toLowerCase();
+        if (purchaserStr === 'third party inspection' || purchaserStr.includes('third party inspection')) {
+            years = 1;
+        } else {
+            years = 3;
+        }
+    }
+
+    const expiry = new Date(startDate);
+    expiry.setFullYear(expiry.getFullYear() + years);
+    return expiry;
+};
+
 const createToolInStore = async (toolData) => {
     const data = processToolData(toolData);
     if (!data.currentSite && toolData.storeId) data.currentSite = toolData.storeId;
@@ -619,6 +757,10 @@ const createToolInStore = async (toolData) => {
         } else {
             data.validityPeriod = '3 Years';
         }
+    }
+
+    if (!data.nextInspectionDueDate) {
+        data.nextInspectionDueDate = computeToolExpiryDate(data);
     }
     if (!data.toolId) {
         const projectScopeKey = ToolIdGenerator.getProjectScopeKey(data);
@@ -785,6 +927,10 @@ const updateToolById = async (id, toolData) => {
 
     data.toolId = newToolId;
     data.qrLink = newQrLink;
+
+    if (toolData.validityPeriod !== undefined || toolData.dateOfSupply !== undefined || toolData.validationStartDate !== undefined || !existingTool.nextInspectionDueDate) {
+        data.nextInspectionDueDate = computeToolExpiryDate(mergedToolData);
+    }
 
     const tool = await Tool.findByIdAndUpdate(existingTool._id, data, { new: true, runValidators: true });
     if (!tool) throw new Error('Tool not found');
@@ -1708,6 +1854,10 @@ const bulkEditTools = async ({ storeId, toolIds, filterCriteria, updates, user }
             newValues
         });
 
+        if (updates.validityPeriod !== undefined || updates.dateOfSupply !== undefined || updates.validationStartDate !== undefined || !tool.nextInspectionDueDate) {
+            tool.nextInspectionDueDate = computeToolExpiryDate(tool);
+        }
+
         await tool.save();
 
         if (oldToolId && oldToolId !== newToolId) {
@@ -2224,5 +2374,6 @@ export const toolService = {
     bulkEditTools,
     transferTools,
     inspectTools,
-    syncToolIdReferences
+    syncToolIdReferences,
+    computeToolExpiryDate
 };

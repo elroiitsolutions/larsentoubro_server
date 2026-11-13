@@ -93,6 +93,47 @@ export const generateProfileCode = async (profileType) => {
     return `${prefix}-${String(count + 1).padStart(4, '0')}`;
 };
 
+export const validateIndianMobile = (rawMobile, fieldName = 'Phone Number') => {
+    const val = (rawMobile || '').trim();
+    if (!val) {
+        return { isValid: false, error: `${fieldName} is required.` };
+    }
+    if (/\D/.test(val)) {
+        return {
+            isValid: false,
+            error: `${fieldName} must contain only 10 numbers without spaces, letters, or country code (+91).`
+        };
+    }
+    if (val.length !== 10) {
+        return {
+            isValid: false,
+            error: `${fieldName} must be exactly 10 digits without country code.`
+        };
+    }
+    if (!/^[6-9]/.test(val)) {
+        return {
+            isValid: false,
+            error: `${fieldName} must be a valid Indian mobile number starting with 6, 7, 8, or 9.`
+        };
+    }
+    return { isValid: true };
+};
+
+export const validateEmailAddress = (rawEmail, fieldName = 'Email Address') => {
+    const email = (rawEmail || '').trim().toLowerCase();
+    if (!email) {
+        return { isValid: false, error: `${fieldName} is required.` };
+    }
+    const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+$/i;
+    if (!email.includes('@') || !email.includes('.') || !emailRegex.test(email)) {
+        return {
+            isValid: false,
+            error: `Invalid ${fieldName} format. Must contain "@" and "." (e.g. name@domain.com).`
+        };
+    }
+    return { isValid: true };
+};
+
 const validateProfileAgainstSchema = async (profileType, data) => {
     const slug = profileType === 'Subcontractor'
         ? 'subcontractor-form'
@@ -108,7 +149,6 @@ const validateProfileAgainstSchema = async (profileType, data) => {
             field.required ||
             (Array.isArray(field.validations) && field.validations.some(v => v.type === 'required'))
         );
-        if (!isReq) continue;
 
         let val = data[field.name];
         if (val === undefined || val === null || String(val).trim() === '') {
@@ -139,14 +179,25 @@ const validateProfileAgainstSchema = async (profileType, data) => {
             throw err;
         }
 
-        // Email format validation (@ and . domain check)
-        if (field.name === 'contactEmail' || field.name === 'email' || field.type === 'email') {
-            const emailVal = val || data.contactEmail || data.email || (data.keyPersonnel && data.keyPersonnel[0]?.email);
-            if (emailVal) {
-                const emailStr = String(emailVal).trim().toLowerCase();
-                const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+$/i;
-                if (!emailStr.includes('@') || !emailStr.includes('.') || !emailRegex.test(emailStr)) {
-                    const err = new Error('Invalid email format. Email must contain "@" and "." (e.g. name@domain.com).');
+        // Validate Indian mobile phone format (10 digits, starts with 6-9, no country code)
+        const fieldNameLower = String(field.name || '').toLowerCase();
+        if (fieldNameLower.includes('phone') || field.type === 'phone') {
+            if (val && String(val).trim()) {
+                const check = validateIndianMobile(String(val).trim(), field.label || field.name);
+                if (!check.isValid) {
+                    const err = new Error(check.error);
+                    err.status = 400;
+                    throw err;
+                }
+            }
+        }
+
+        // Validate Email format (@ and . check)
+        if (fieldNameLower.includes('email') || field.type === 'email') {
+            if (val && String(val).trim()) {
+                const check = validateEmailAddress(String(val).trim(), field.label || field.name);
+                if (!check.isValid) {
+                    const err = new Error(check.error);
                     err.status = 400;
                     throw err;
                 }
@@ -162,6 +213,62 @@ export const createProfile = async (data, user = {}) => {
 
     // Validate all required fields configured in the Form Definition (standard + custom fields)
     await validateProfileAgainstSchema(data.profileType, data);
+
+    // Validate phone & email format
+    if (data.contactPhone && String(data.contactPhone).trim()) {
+        const check = validateIndianMobile(String(data.contactPhone).trim(), 'Primary Phone Number');
+        if (!check.isValid) {
+            const err = new Error(check.error);
+            err.status = 400;
+            throw err;
+        }
+    }
+    if (data.alternatePhone && String(data.alternatePhone).trim()) {
+        const check = validateIndianMobile(String(data.alternatePhone).trim(), 'Alternate Phone Number');
+        if (!check.isValid) {
+            const err = new Error(check.error);
+            err.status = 400;
+            throw err;
+        }
+    }
+    if (data.contactEmail && String(data.contactEmail).trim()) {
+        const check = validateEmailAddress(String(data.contactEmail).trim(), 'Email Address');
+        if (!check.isValid) {
+            const err = new Error(check.error);
+            err.status = 400;
+            throw err;
+        }
+    }
+    if (Array.isArray(data.keyPersonnel)) {
+        for (let i = 0; i < data.keyPersonnel.length; i++) {
+            const kp = data.keyPersonnel[i];
+            const prefix = data.keyPersonnel.length > 1 ? `Key Personnel #${i + 1} ` : '';
+            if (kp.phone && String(kp.phone).trim()) {
+                const check = validateIndianMobile(String(kp.phone).trim(), `${prefix}Phone Number`);
+                if (!check.isValid) {
+                    const err = new Error(check.error);
+                    err.status = 400;
+                    throw err;
+                }
+            }
+            if (kp.alternatePhone && String(kp.alternatePhone).trim()) {
+                const check = validateIndianMobile(String(kp.alternatePhone).trim(), `${prefix}Alternate Phone Number`);
+                if (!check.isValid) {
+                    const err = new Error(check.error);
+                    err.status = 400;
+                    throw err;
+                }
+            }
+            if (kp.email && String(kp.email).trim()) {
+                const check = validateEmailAddress(String(kp.email).trim(), `${prefix}Email Address`);
+                if (!check.isValid) {
+                    const err = new Error(check.error);
+                    err.status = 400;
+                    throw err;
+                }
+            }
+        }
+    }
 
     let code = data.code ? data.code.trim().toUpperCase() : '';
     if (!code) {
@@ -221,6 +328,62 @@ export const updateProfile = async (id, data, user = null) => {
     // Validate updated data against dynamic form schema
     const profileType = existing.profileType || data.profileType;
     await validateProfileAgainstSchema(profileType, { ...existing, ...data });
+
+    // Validate phone & email format
+    if (data.contactPhone && String(data.contactPhone).trim()) {
+        const check = validateIndianMobile(String(data.contactPhone).trim(), 'Primary Phone Number');
+        if (!check.isValid) {
+            const err = new Error(check.error);
+            err.status = 400;
+            throw err;
+        }
+    }
+    if (data.alternatePhone && String(data.alternatePhone).trim()) {
+        const check = validateIndianMobile(String(data.alternatePhone).trim(), 'Alternate Phone Number');
+        if (!check.isValid) {
+            const err = new Error(check.error);
+            err.status = 400;
+            throw err;
+        }
+    }
+    if (data.contactEmail && String(data.contactEmail).trim()) {
+        const check = validateEmailAddress(String(data.contactEmail).trim(), 'Email Address');
+        if (!check.isValid) {
+            const err = new Error(check.error);
+            err.status = 400;
+            throw err;
+        }
+    }
+    if (Array.isArray(data.keyPersonnel)) {
+        for (let i = 0; i < data.keyPersonnel.length; i++) {
+            const kp = data.keyPersonnel[i];
+            const prefix = data.keyPersonnel.length > 1 ? `Key Personnel #${i + 1} ` : '';
+            if (kp.phone && String(kp.phone).trim()) {
+                const check = validateIndianMobile(String(kp.phone).trim(), `${prefix}Phone Number`);
+                if (!check.isValid) {
+                    const err = new Error(check.error);
+                    err.status = 400;
+                    throw err;
+                }
+            }
+            if (kp.alternatePhone && String(kp.alternatePhone).trim()) {
+                const check = validateIndianMobile(String(kp.alternatePhone).trim(), `${prefix}Alternate Phone Number`);
+                if (!check.isValid) {
+                    const err = new Error(check.error);
+                    err.status = 400;
+                    throw err;
+                }
+            }
+            if (kp.email && String(kp.email).trim()) {
+                const check = validateEmailAddress(String(kp.email).trim(), `${prefix}Email Address`);
+                if (!check.isValid) {
+                    const err = new Error(check.error);
+                    err.status = 400;
+                    throw err;
+                }
+            }
+        }
+    }
 
     const profile = await Profile.findByIdAndUpdate(id, data, { new: true, runValidators: true })
         .populate('projects', 'name projectCode location')

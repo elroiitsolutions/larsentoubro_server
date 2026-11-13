@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 
 const storeSchema = new mongoose.Schema({
     name: { type: String, required: true },
-    location: { type: String, default: 'Main Yard' },
+    location: { type: String },
     manager: { type: String, default: 'Unassigned' },
     status: { type: String, default: 'New Setup' },
     type: { type: String, enum: ['Store', 'HUB'], default: 'Store' },
