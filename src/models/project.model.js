@@ -2,13 +2,16 @@ import mongoose from 'mongoose';
 
 const projectSchema = new mongoose.Schema({
     name: { type: String, required: true },
+    projectName: { type: String },
     projectCode: { type: String },
-    department: { type: String, default: 'Unassigned' },
-    division: { type: String, default: 'Buildings & Infrastructure' },
-    lead: { type: String, default: 'Unassigned' },
-    status: { type: String, default: 'Planning' },
+    code: { type: String },
+    department: { type: String },
+    division: { type: String },
+    lead: { type: String },
+    status: { type: String },
     budget: { type: mongoose.Schema.Types.Mixed },
-    deadline: { type: String, default: 'TBD' }
+    deadline: { type: String },
+    customFields: { type: mongoose.Schema.Types.Mixed, default: {} }
 }, {
     timestamps: true,
     strict: false

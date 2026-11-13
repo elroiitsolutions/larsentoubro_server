@@ -9,6 +9,46 @@ import { realtimeService } from '../services/socket.service.js';
 import { Vendor } from '../models/vendor.model.js';
 import { parseUserAgent } from '../utils/deviceInfo.js';
 import otpService from '../services/otp.service.js';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Ensure user uploads directory exists
+const userUploadsDir = path.join(__dirname, '../../uploads/user-documents');
+if (!fs.existsSync(userUploadsDir)) {
+    fs.mkdirSync(userUploadsDir, { recursive: true });
+}
+
+// Multer Storage Configuration for User/Subuser Documents
+const userDocStorage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, userUploadsDir);
+    },
+    filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        const ext = path.extname(file.originalname);
+        const nameWithoutExt = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9]/g, '_');
+        cb(null, `${nameWithoutExt}_${uniqueSuffix}${ext}`);
+    }
+});
+
+export const userDocUpload = multer({
+    storage: userDocStorage,
+    limits: { fileSize: 25 * 1024 * 1024 }, // 25MB max
+    fileFilter: (req, file, cb) => {
+        const allowedTypes = /jpeg|jpg|png|gif|pdf|doc|docx|xls|xlsx|csv|zip/;
+        const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+        const mimetype = allowedTypes.test(file.mimetype) || file.mimetype.includes('pdf') || file.mimetype.includes('document') || file.mimetype.includes('sheet') || file.mimetype.includes('image');
+        if (extname || mimetype) {
+            return cb(null, true);
+        }
+        cb(new Error('Invalid file format. Allowed formats: PDF, Images, Word, Excel, ZIP'));
+    }
+});
 
 /**
  * [SHARED] & [WEB] User Controller
@@ -874,6 +914,86 @@ const verifyGuestOtp = async (req, res, next) => {
     }
 };
 
+// [WEB] Upload Document to User/Subuser
+const uploadDocument = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const { title, documentType } = req.body;
+        const file = req.file;
+
+        if (!file) {
+            return res.status(400).json({ success: false, message: 'No file uploaded' });
+        }
+
+        const fileUrl = `/api/users/documents/file/${file.filename}`;
+
+        const docData = {
+            title: title || file.originalname,
+            documentType: documentType || 'Other',
+            fileName: file.filename,
+            originalName: file.originalname,
+            fileUrl,
+            filePath: file.path,
+            fileType: file.mimetype,
+            fileSize: file.size,
+            uploadedAt: new Date(),
+            uploadedBy: req.user ? (req.user.name || req.user.email) : 'System Admin'
+        };
+
+        const updatedUser = await userService.addDocument(id, docData, req.user);
+        res.status(200).json({ success: true, message: 'Document uploaded successfully', data: updatedUser });
+    } catch (error) {
+        if (error.message && error.message.includes('Access denied')) {
+            return res.status(403).json({ success: false, message: error.message });
+        }
+        next(error);
+    }
+};
+
+// [WEB] Delete Document from User/Subuser
+const deleteDocument = async (req, res, next) => {
+    try {
+        const { id, docId } = req.params;
+        const user = await userService.getUserById(id, req.user);
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+
+        const targetDoc = (user.documents || []).find(d => String(d._id) === String(docId));
+        if (targetDoc && targetDoc.filePath && fs.existsSync(targetDoc.filePath)) {
+            try {
+                fs.unlinkSync(targetDoc.filePath);
+            } catch (fsErr) {
+                console.error("Error removing file from disk:", fsErr);
+            }
+        }
+
+        const updatedUser = await userService.deleteDocument(id, docId, req.user);
+        res.status(200).json({ success: true, message: 'Document deleted successfully', data: updatedUser });
+    } catch (error) {
+        if (error.message && error.message.includes('Access denied')) {
+            return res.status(403).json({ success: false, message: error.message });
+        }
+        next(error);
+    }
+};
+
+// [WEB] Download / Serve User Document File
+const downloadDocumentFile = async (req, res, next) => {
+    try {
+        const { filename } = req.params;
+        const filePath = path.join(userUploadsDir, filename);
+
+        if (!fs.existsSync(filePath)) {
+            return res.status(404).json({ success: false, message: 'File not found on server' });
+        }
+
+        res.sendFile(filePath);
+    } catch (error) {
+        next(error);
+    }
+};
+
 export const userController = {
     // [SHARED] Core User Management
     createUser,
@@ -886,6 +1006,9 @@ export const userController = {
     deleteUser,
     deleteSubuser,
     getCurrentUser,
+    uploadDocument,
+    deleteDocument,
+    downloadDocumentFile,
 
     // [SHARED] Authentication & Multi-Device Approvals
     loginUser,
