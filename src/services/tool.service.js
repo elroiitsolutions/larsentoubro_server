@@ -157,6 +157,10 @@ const applyAdvancedFilters = (query, params) => {
             query.isPrinted = true;
         } else if (strStatus.toLowerCase() === 'not printed' || strStatus.toLowerCase() === 'unprinted' || strStatus.toLowerCase() === 'unprint') {
             query.isPrinted = { $ne: true };
+        } else if (strStatus.toLowerCase() === 'moving' || strStatus.toLowerCase() === 'in transit') {
+            query.status = { $in: ['Moving', 'In Transit'] };
+        } else if (strStatus.toLowerCase() === 'repair' || strStatus.toLowerCase() === 'under repair' || strStatus.toLowerCase() === 'maintenance') {
+            query.status = { $in: ['Repair', 'Under Repair', 'Damaged/Repair'] };
         } else {
             const escapedStat = strStatus.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             query.status = { $regex: `^${escapedStat}$`, $options: 'i' };
@@ -280,6 +284,26 @@ const applyAdvancedFilters = (query, params) => {
         'dateOfSupply', 'purchaserName', 'purchaserContact',
         'supplierCode', 'jobCode', 'jobDescription', 'remarks', 'subcontractorName'
     ];
+
+    // Project filter
+    const projectFilter = params.projectId || params.project;
+    if (projectFilter && projectFilter !== 'All' && String(projectFilter).trim()) {
+        const isProjObjId = mongoose.Types.ObjectId.isValid(projectFilter);
+        query.project = isProjObjId ? new mongoose.Types.ObjectId(projectFilter) : projectFilter;
+    }
+
+    // Store filter (when storeId is 'all' or selectedStoreId provided)
+    const storeFilter = params.selectedStoreId || params.storeFilter;
+    if (storeFilter && storeFilter !== 'All' && storeFilter !== 'all' && String(storeFilter).trim()) {
+        const isStoreObjId = mongoose.Types.ObjectId.isValid(storeFilter);
+        const storeObj = isStoreObjId ? new mongoose.Types.ObjectId(storeFilter) : storeFilter;
+        query.$or = [
+            { currentSite: storeObj },
+            ...(isStoreObjId ? [{ currentSite: storeFilter.toString() }] : []),
+            { store: storeObj },
+            ...(isStoreObjId ? [{ store: storeFilter.toString() }] : [])
+        ];
+    }
 
     for (const field of filterFields) {
         if (field === 'toolType' && query.toolType) continue;
@@ -478,20 +502,30 @@ export const resequenceProjectToolSerials = async (projectId, onProgress = null)
 const getToolsByStoreId = async (storeId, params = {}) => {
     const { page = 1, limit = 10, sortBy = 'serialNumber', sortOrder = 'asc' } = params;
 
-    const isObjId = mongoose.Types.ObjectId.isValid(storeId);
+    const isAll = !storeId || storeId === 'all';
+    const isObjId = !isAll && mongoose.Types.ObjectId.isValid(storeId);
     const storeObjId = isObjId ? new mongoose.Types.ObjectId(storeId) : storeId;
-    const storeKey = storeId ? storeId.toString() : '';
+    const storeKey = isAll ? 'all' : (storeId ? storeId.toString() : '');
 
     const query = {
-        $or: [
+        isDeleted: { $ne: true },
+        isScrapped: { $ne: true }
+    };
+
+    if (!isAll) {
+        query.$or = [
             { currentSite: storeObjId },
             ...(isObjId ? [{ currentSite: storeId.toString() }] : []),
             { store: storeObjId },
             ...(isObjId ? [{ store: storeId.toString() }] : [])
-        ],
-        isDeleted: { $ne: true },
-        isScrapped: { $ne: true }
-    };
+        ];
+    } else if (params.userStores && Array.isArray(params.userStores) && params.userStores.length > 0) {
+        const userStoreObjIds = params.userStores.map(s => mongoose.Types.ObjectId.isValid(s) ? new mongoose.Types.ObjectId(s) : s);
+        query.$or = [
+            { currentSite: { $in: userStoreObjIds } },
+            { store: { $in: userStoreObjIds } }
+        ];
+    }
 
     if (params.assignedToolIds) {
         const assignedIds = Array.isArray(params.assignedToolIds)
@@ -518,7 +552,7 @@ const getToolsByStoreId = async (storeId, params = {}) => {
     // Fast lean response for multi-page Select All across filters
     if (params.onlyIds === 'true' || params.onlyIds === true || params.allIds === 'true' || params.allIds === true) {
         const leanTools = await Tool.find(query)
-            .select('_id toolId toolCode description name status isPrinted category toolType serialNumber validityPeriod validation')
+            .select('_id toolId toolCode description name status isPrinted category toolType serialNumber validityPeriod validation currentSite store project')
             .sort(sort)
             .lean();
         return {
@@ -529,15 +563,25 @@ const getToolsByStoreId = async (storeId, params = {}) => {
     }
 
     const storeMatchFilter = {
-        $or: [
+        isDeleted: { $ne: true },
+        isScrapped: { $ne: true }
+    };
+
+    if (!isAll) {
+        storeMatchFilter.$or = [
             { currentSite: storeObjId },
             ...(isObjId ? [{ currentSite: storeId.toString() }] : []),
             { store: storeObjId },
             ...(isObjId ? [{ store: storeId.toString() }] : [])
-        ],
-        isDeleted: { $ne: true },
-        isScrapped: { $ne: true }
-    };
+        ];
+    } else if (params.userStores && Array.isArray(params.userStores) && params.userStores.length > 0) {
+        const userStoreObjIds = params.userStores.map(s => mongoose.Types.ObjectId.isValid(s) ? new mongoose.Types.ObjectId(s) : s);
+        storeMatchFilter.$or = [
+            { currentSite: { $in: userStoreObjIds } },
+            { store: { $in: userStoreObjIds } }
+        ];
+    }
+
     if (params.assignedToolIds) {
         const assignedIds = Array.isArray(params.assignedToolIds)
             ? params.assignedToolIds
@@ -545,6 +589,24 @@ const getToolsByStoreId = async (storeId, params = {}) => {
         if (assignedIds.length > 0) {
             storeMatchFilter._id = { $in: assignedIds.map(id => mongoose.Types.ObjectId.isValid(id) ? new mongoose.Types.ObjectId(id) : id) };
         }
+    }
+
+    const projMatch = params.projectId || params.project;
+    if (projMatch && projMatch !== 'All' && String(projMatch).trim()) {
+        const isProjObjId = mongoose.Types.ObjectId.isValid(projMatch);
+        storeMatchFilter.project = isProjObjId ? new mongoose.Types.ObjectId(projMatch) : projMatch;
+    }
+
+    const storeMatch = params.selectedStoreId || params.storeFilter;
+    if (isAll && storeMatch && storeMatch !== 'All' && storeMatch !== 'all' && String(storeMatch).trim()) {
+        const isStoreObjId = mongoose.Types.ObjectId.isValid(storeMatch);
+        const stObj = isStoreObjId ? new mongoose.Types.ObjectId(storeMatch) : storeMatch;
+        storeMatchFilter.$or = [
+            { currentSite: stObj },
+            ...(isStoreObjId ? [{ currentSite: storeMatch.toString() }] : []),
+            { store: stObj },
+            ...(isStoreObjId ? [{ store: storeMatch.toString() }] : [])
+        ];
     }
 
     const skip = (page - 1) * limit;
@@ -557,7 +619,11 @@ const getToolsByStoreId = async (storeId, params = {}) => {
         (params.status && params.status !== 'All') ||
         (params.printStatus && params.printStatus !== 'All') ||
         (params.expiryStatus && params.expiryStatus !== 'All') ||
-        (params.expiryFilter && params.expiryFilter !== 'All')
+        (params.expiryFilter && params.expiryFilter !== 'All') ||
+        (params.projectId && params.projectId !== 'All') ||
+        (params.project && params.project !== 'All') ||
+        (params.selectedStoreId && params.selectedStoreId !== 'All') ||
+        (params.storeFilter && params.storeFilter !== 'All')
     );
 
     let statusCountsPromise;
@@ -575,6 +641,7 @@ const getToolsByStoreId = async (storeId, params = {}) => {
                     available: { $sum: { $cond: [{ $eq: ['$status', 'Available'] }, 1, 0] } },
                     moving: { $sum: { $cond: [{ $in: ['$status', ['Moving', 'In Transit']] }, 1, 0] } },
                     repair: { $sum: { $cond: [{ $in: ['$status', ['Repair', 'Under Repair', 'Damaged/Repair']] }, 1, 0] } },
+                    missing: { $sum: { $cond: [{ $eq: ['$status', 'Missing'] }, 1, 0] } },
                     printed: { $sum: { $cond: [{ $eq: ['$isPrinted', true] }, 1, 0] } },
                     unprinted: { $sum: { $cond: [{ $ne: ['$isPrinted', true] }, 1, 0] } },
                     expired: { $sum: { $cond: [{ $and: [{ $ne: ['$nextInspectionDueDate', null] }, { $lt: ['$nextInspectionDueDate', now] }] }, 1, 0] } },
@@ -601,6 +668,7 @@ const getToolsByStoreId = async (storeId, params = {}) => {
                     available: res[0].available || 0,
                     moving: res[0].moving || 0,
                     repair: res[0].repair || 0,
+                    missing: res[0].missing || 0,
                     printed: res[0].printed || 0,
                     unprinted: res[0].unprinted || 0,
                     expired: res[0].expired || 0,
@@ -630,11 +698,12 @@ const getToolsByStoreId = async (storeId, params = {}) => {
         available: statusAgg[0].available || 0,
         moving: statusAgg[0].moving || 0,
         repair: statusAgg[0].repair || 0,
+        missing: statusAgg[0].missing || 0,
         printed: statusAgg[0].printed || 0,
         unprinted: statusAgg[0].unprinted || 0,
         expired: statusAgg[0].expired || 0,
         expiringSoon: statusAgg[0].expiringSoon || 0
-    } : { all: total, available: 0, moving: 0, repair: 0, printed: 0, unprinted: 0, expired: 0, expiringSoon: 0 };
+    } : { all: total, available: 0, moving: 0, repair: 0, missing: 0, printed: 0, unprinted: 0, expired: 0, expiringSoon: 0 };
 
     return {
         data,
@@ -1019,7 +1088,7 @@ const bulkDeleteTools = async ({ toolIds, storeId, user }) => {
         isScrapped: { $ne: true }
     };
 
-    if (storeId) {
+    if (storeId && storeId !== 'all') {
         query.$or = [
             { currentSite: storeId },
             { store: storeId }
@@ -1580,13 +1649,23 @@ const bulkPermanentDeleteTools = async ({ toolIds, user }) => {
 
 const exportToolsByStoreId = async (storeId, params = {}) => {
     const { sortBy = 'createdAt', sortOrder = 'desc', exportScope = 'filtered', exportType = 'excel' } = params;
+    const isAll = !storeId || storeId === 'all';
     const query = {
-        $or: [
-            { currentSite: storeId },
-            { store: storeId }
-        ],
         isDeleted: { $ne: true }
     };
+
+    if (!isAll) {
+        query.$or = [
+            { currentSite: storeId },
+            { store: storeId }
+        ];
+    } else if (params.userStores && Array.isArray(params.userStores) && params.userStores.length > 0) {
+        const userStoreObjIds = params.userStores.map(s => mongoose.Types.ObjectId.isValid(s) ? new mongoose.Types.ObjectId(s) : s);
+        query.$or = [
+            { currentSite: { $in: userStoreObjIds } },
+            { store: { $in: userStoreObjIds } }
+        ];
+    }
 
     if (exportScope === 'filtered') {
         applyAdvancedFilters(query, params);
@@ -1726,24 +1805,27 @@ const getToolById = async (id, storeId = null, projectId = null) => {
 };
 
 const getToolFilterOptions = async (storeId) => {
-    const storeKey = storeId ? storeId.toString() : '';
+    const isAll = !storeId || storeId === 'all';
+    const storeKey = isAll ? 'all' : (storeId ? storeId.toString() : '');
     const now = Date.now();
     const cached = filterOptionsCache.get(storeKey);
     if (cached && cached.expiresAt > now) {
         return cached.options;
     }
 
-    const isObjId = mongoose.Types.ObjectId.isValid(storeId);
+    const isObjId = !isAll && mongoose.Types.ObjectId.isValid(storeId);
     const storeObj = isObjId ? new mongoose.Types.ObjectId(storeId) : storeId;
     const storeQuery = {
-        $or: [
+        isDeleted: { $ne: true }
+    };
+    if (!isAll) {
+        storeQuery.$or = [
             { currentSite: storeObj },
             ...(isObjId ? [{ currentSite: storeId.toString() }] : []),
             { store: storeObj },
             ...(isObjId ? [{ store: storeId.toString() }] : [])
-        ],
-        isDeleted: { $ne: true }
-    };
+        ];
+    }
 
     // Categorical fields that are displayed in dropdown select menus
     const categoricalFields = [
@@ -1791,7 +1873,7 @@ const bulkEditTools = async ({ storeId, toolIds, filterCriteria, updates, user }
         isDeleted: { $ne: true }
     };
 
-    if (storeId) {
+    if (storeId && storeId !== 'all') {
         query.$or = [
             { currentSite: storeId },
             { store: storeId }

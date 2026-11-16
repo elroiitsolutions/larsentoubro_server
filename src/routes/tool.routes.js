@@ -1,8 +1,11 @@
 import express from 'express';
 import {
+    getToolsByStoreId,
     getToolById,
     updateToolById,
     deleteToolById,
+    exportToolsByStoreId,
+    getToolFilterOptions,
     bulkEditTools,
     bulkDeleteTools,
     getDeletedTools,
@@ -26,6 +29,25 @@ import { authenticate, requireAdmin, requireInspectionPermission, restrictInspec
 const router = express.Router();
 
 router.use(authenticate);
+
+// ==========================================
+// [SHARED] All Tools Inventory Endpoints
+// ==========================================
+
+/**
+ * [SHARED] GET /api/tools - List all tools across stores with filters, pagination, and statusCounts
+ */
+router.get('/', getToolsByStoreId);
+
+/**
+ * [WEB] GET /api/tools/export - Export tools catalog to Excel or CSV
+ */
+router.get('/export', exportToolsByStoreId);
+
+/**
+ * [SHARED] GET /api/tools/filter-options - Category/Condition filter options across all tools
+ */
+router.get('/filter-options', getToolFilterOptions);
 
 // ==========================================
 // [APP] Mobile-Exclusive Batch Tool Operations

@@ -112,7 +112,7 @@ export const startDeleteJob = async ({ toolIds, storeId, user }) => {
                 isScrapped: { $ne: true }
             };
 
-            if (storeId) {
+            if (storeId && storeId !== 'all') {
                 query.$or = [
                     { currentSite: storeId },
                     { store: storeId }
@@ -227,7 +227,7 @@ export const startDeleteJob = async ({ toolIds, storeId, user }) => {
             }
 
             if (storeId) {
-                invalidateStoreStatusCache(storeId);
+                invalidateStoreStatusCache(storeId === 'all' ? undefined : storeId);
             }
 
             // Complete

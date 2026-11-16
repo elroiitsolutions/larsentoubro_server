@@ -126,6 +126,9 @@ export const lookupToolValidity = async (req, res, next) => {
 };
 
 const verifyStoreAccess = (req, storeId) => {
+    if (!storeId || storeId === 'all') {
+        return true;
+    }
     if (req.user && req.user.role !== 'Admin' && req.user.role !== 'Vendor') {
         const assignedStoreIds = (req.user.stores || []).map(s => {
             if (!s) return '';
@@ -144,17 +147,27 @@ const verifyStoreAccess = (req, storeId) => {
  */
 export const getToolsByStoreId = async (req, res, next) => {
     try {
-        const { storeId } = req.params;
+        const storeId = req.params.storeId || req.query.storeId || 'all';
         const queryParams = { ...req.query };
 
         if (req.user && req.user.role === 'Vendor') {
             const scope = await getVendorAssignedScope(req.user);
-            if (!scope.assignedStoreIds.includes(storeId.toString())) {
+            if (storeId !== 'all' && !scope.assignedStoreIds.includes(storeId.toString())) {
                 return res.status(403).json({ success: false, message: 'Access denied. You do not have Delivery Challan assignments for this store.' });
             }
             queryParams.assignedToolIds = scope.assignedToolObjectIds;
+            if (storeId === 'all') {
+                queryParams.userStores = scope.assignedStoreIds;
+            }
         } else if (!verifyStoreAccess(req, storeId)) {
             return res.status(403).json({ success: false, message: 'Access denied. You are not assigned to this store.' });
+        } else if (storeId === 'all' && req.user && req.user.role !== 'Admin') {
+            const assignedStoreIds = (req.user.stores || []).map(s => {
+                if (!s) return '';
+                if (typeof s === 'object' && s._id) return s._id.toString();
+                return s.toString();
+            }).filter(Boolean);
+            queryParams.userStores = assignedStoreIds;
         }
 
         const result = await toolService.getToolsByStoreId(storeId, queryParams);
@@ -184,17 +197,27 @@ export const getToolsByIds = async (req, res, next) => {
  */
 export const exportToolsByStoreId = async (req, res, next) => {
     try {
-        const { storeId } = req.params;
+        const storeId = req.params.storeId || req.query.storeId || 'all';
         const queryParams = { ...req.query };
 
         if (req.user && req.user.role === 'Vendor') {
             const scope = await getVendorAssignedScope(req.user);
-            if (!scope.assignedStoreIds.includes(storeId.toString())) {
+            if (storeId !== 'all' && !scope.assignedStoreIds.includes(storeId.toString())) {
                 return res.status(403).json({ success: false, message: 'Access denied. You do not have Delivery Challan assignments for this store.' });
             }
             queryParams.assignedToolIds = scope.assignedToolObjectIds;
+            if (storeId === 'all') {
+                queryParams.userStores = scope.assignedStoreIds;
+            }
         } else if (!verifyStoreAccess(req, storeId)) {
             return res.status(403).json({ success: false, message: 'Access denied. You are not assigned to this store.' });
+        } else if (storeId === 'all' && req.user && req.user.role !== 'Admin') {
+            const assignedStoreIds = (req.user.stores || []).map(s => {
+                if (!s) return '';
+                if (typeof s === 'object' && s._id) return s._id.toString();
+                return s.toString();
+            }).filter(Boolean);
+            queryParams.userStores = assignedStoreIds;
         }
 
         const { exportType = 'excel' } = req.query;
@@ -601,7 +624,7 @@ export const getToolById = async (req, res, next) => {
  */
 export const getToolFilterOptions = async (req, res, next) => {
     try {
-        const { storeId } = req.params;
+        const storeId = req.params.storeId || req.query.storeId || 'all';
         if (!verifyStoreAccess(req, storeId)) {
             return res.status(403).json({ success: false, message: 'Access denied. You are not assigned to this store.' });
         }
