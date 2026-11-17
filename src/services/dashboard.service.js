@@ -485,6 +485,21 @@ export const getDashboardStats = async (filters = {}, user = null) => {
 
     activityFeed.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
+    // Prioritize critical alerts first: Missing tools (highest critical), then Damaged/Repair, then Expired, then Inspection Due
+    const alertPriority = {
+        'Missing Tool': 1,
+        'Damaged / Under Repair': 2,
+        'Expired Tool': 3,
+        'Inspection Due': 4
+    };
+
+    alerts.sort((a, b) => {
+        const pA = alertPriority[a.type] || 99;
+        const pB = alertPriority[b.type] || 99;
+        if (pA !== pB) return pA - pB;
+        return new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime();
+    });
+
     // Filter alerts if status is explicitly requested
     let displayAlerts = alerts;
     if (status && status !== 'All') {
@@ -501,6 +516,10 @@ export const getDashboardStats = async (filters = {}, user = null) => {
             displayAlerts = [];
         }
     }
+
+    // Ensure all critical alerts (e.g. Missing tools) are preserved and never truncated
+    const missingAlertCount = displayAlerts.filter(a => a.type === 'Missing Tool').length;
+    const alertLimit = Math.max(25, missingAlertCount + 15);
 
     return {
         summaryCards: {
@@ -537,7 +556,7 @@ export const getDashboardStats = async (filters = {}, user = null) => {
             pendingInward,
             currentlyInTransit: inTransit
         },
-        alerts: displayAlerts.slice(0, 15),
+        alerts: displayAlerts.slice(0, alertLimit),
         recentActivity: activityFeed.slice(0, 15)
     };
 };

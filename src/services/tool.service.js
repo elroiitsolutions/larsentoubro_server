@@ -3,6 +3,8 @@ import mongoose from 'mongoose';
 import { Tool } from '../models/tool.model.js';
 import { Counter } from '../models/counter.model.js';
 import ToolAuditLog from '../models/toolAuditLog.model.js';
+import { ToolMovement } from '../models/toolMovement.model.js';
+import { MissingTool } from '../models/missingTool.model.js';
 import ToolIdGenerator from '../utils/tool-id.js';
 import * as XLSX from 'xlsx';
 
@@ -1043,7 +1045,7 @@ const deleteToolById = async (id, user = {}) => {
         tool.originalSerialNumber = tool.serialNumber;
     }
 
-    // UNPRINTED TOOL -> Soft Delete to Trash, RE-SEQUENCE active tools!
+    // UNPRINTED TOOL -> Soft Delete to Trash
     tool.isDeleted = true;
     tool.isScrapped = false;
     tool.status = 'Deleted';
@@ -1053,10 +1055,6 @@ const deleteToolById = async (id, user = {}) => {
         tool.toolId = `__TRASHED_${tool._id}_${tool.toolId}`;
     }
     await tool.save();
-
-    if (tool.project || tool.currentSite) {
-        await resequenceProjectToolSerials(tool.project || tool.currentSite);
-    }
 
     const auditLog = new ToolAuditLog({
         user: userInfo,
@@ -1069,7 +1067,8 @@ const deleteToolById = async (id, user = {}) => {
     });
     await auditLog.save();
 
-    invalidateStoreStatusCache(tool.currentSite);
+    invalidateStoreStatusCache(tool.currentSite || tool.store);
+    invalidateStoreStatusCache();
     return tool;
 };
 
@@ -1163,22 +1162,21 @@ const bulkDeleteTools = async ({ toolIds, storeId, user }) => {
         }
     }
 
-    for (const projId of affectedProjectIds) {
-        await resequenceProjectToolSerials(projId);
-    }
-
     const auditLog = new ToolAuditLog({
         user: userInfo,
         dateTime: new Date(),
         action: 'Bulk Delete Unprinted Tools',
         store: storeId || undefined,
         affectedToolsCount: toolsToDelete.length,
-        toolIds: targetToolIds,
+        toolIds: targetToolIds.slice(0, 500),
         remarks: `Bulk deleted ${toolsToDelete.length} unprinted tools to Trash`
     });
     await auditLog.save();
 
-    invalidateStoreStatusCache(storeId);
+    if (storeId) {
+        invalidateStoreStatusCache(storeId);
+    }
+    invalidateStoreStatusCache();
     return { count: toolsToDelete.length, auditLogId: auditLog._id };
 };
 
@@ -1305,27 +1303,21 @@ const bulkScrapTools = async ({ toolIds, reason = '', user }) => {
 };
 
 const getScrappedTools = async (params = {}) => {
-    const { page = 1, limit = 10, search = '', storeId, projectId, disposalStatus = 'pending', sortBy = 'scrappedAt', sortOrder = 'desc' } = params;
-    const query = { isScrapped: true };
-
-    if (disposalStatus === 'pending') {
-        query.isDisposed = { $ne: true };
-    } else if (disposalStatus === 'disposed') {
-        query.isDisposed = true;
-    } // if 'all', match both pending and disposed
+    const { page = 1, limit = 10, search = '', storeId, projectId, disposalStatus = 'all', sortBy = 'scrappedAt', sortOrder = 'desc' } = params;
+    const baseFilter = { isScrapped: true, isDeleted: { $ne: true } };
 
     if (storeId && storeId !== 'All') {
-        query.$or = [
+        baseFilter.$or = [
             { currentSite: storeId },
             { store: storeId }
         ];
     } else if (projectId && projectId !== 'All') {
-        query.project = projectId;
+        baseFilter.project = projectId;
     }
 
     if (search) {
-        if (!query.$and) query.$and = [];
-        query.$and.push({
+        if (!baseFilter.$and) baseFilter.$and = [];
+        baseFilter.$and.push({
             $or: [
                 { description: { $regex: search, $options: 'i' } },
                 { toolId: { $regex: search, $options: 'i' } },
@@ -1334,10 +1326,17 @@ const getScrappedTools = async (params = {}) => {
         });
     }
 
+    const query = { ...baseFilter };
+    if (disposalStatus === 'pending') {
+        query.isDisposed = { $ne: true };
+    } else if (disposalStatus === 'disposed') {
+        query.isDisposed = true;
+    } // if 'all', match both pending and disposed
+
     const sort = { [sortBy]: sortOrder === 'asc' ? 1 : -1 };
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    const [data, total] = await Promise.all([
+    const [data, total, pendingCount, disposedCount, allCount] = await Promise.all([
         Tool.find(query)
             .populate('project', 'name projectCode')
             .populate('currentSite', 'name location')
@@ -1346,7 +1345,10 @@ const getScrappedTools = async (params = {}) => {
             .sort(sort)
             .skip(skip)
             .limit(parseInt(limit)),
-        Tool.countDocuments(query)
+        Tool.countDocuments(query),
+        Tool.countDocuments({ ...baseFilter, isDisposed: { $ne: true } }),
+        Tool.countDocuments({ ...baseFilter, isDisposed: true }),
+        Tool.countDocuments(baseFilter)
     ]);
 
     return {
@@ -1354,7 +1356,12 @@ const getScrappedTools = async (params = {}) => {
         total,
         page: parseInt(page),
         limit: parseInt(limit),
-        totalPages: Math.ceil(total / limit)
+        totalPages: Math.ceil(total / limit),
+        counts: {
+            pending: pendingCount,
+            disposed: disposedCount,
+            all: allCount
+        }
     };
 };
 
@@ -1443,14 +1450,59 @@ const restoreToolById = async (id, user = {}) => {
     }
 
     const wasUnprinted = !tool.isPrinted;
+    const projId = tool.project || tool.currentSite;
+    const projIdStr = projId ? (projId._id ? projId._id.toString() : projId.toString()) : null;
 
-    // Use temporary toolId to guarantee no E11000 index collision during un-deletion
-    if (wasUnprinted && tool.toolId && !tool.toolId.startsWith('__RESTORE_TEMP_')) {
-        tool.toolId = `__RESTORE_TEMP_${tool._id}_${Date.now()}`;
-    } else if (tool.toolId && tool.toolId.startsWith('__TRASHED_')) {
-        tool.toolId = tool.toolId.replace(/^__TRASHED_[^_]+_/, '');
+    // Clean up internal prefixes from toolId
+    let targetToolId = (tool.toolId || '')
+        .replace(/^__TRASHED_[^_]+_/, '')
+        .replace(/^__RESTORE_TEMP_[^_]+_/, '');
+
+    let targetSerial = tool.originalSerialNumber || tool.serialNumber || 1;
+
+    // For unprinted tools, ensure clean non-colliding Tool ID and Serial Number
+    if (wasUnprinted && projIdStr) {
+        const isObjId = mongoose.Types.ObjectId.isValid(projIdStr);
+        const projFilter = {
+            $or: [
+                { project: projIdStr },
+                ...(isObjId ? [{ project: new mongoose.Types.ObjectId(projIdStr) }] : []),
+                { currentSite: projIdStr },
+                ...(isObjId ? [{ currentSite: new mongoose.Types.ObjectId(projIdStr) }] : [])
+            ]
+        };
+
+        const existingCollision = await Tool.findOne({
+            ...projFilter,
+            _id: { $ne: tool._id },
+            isDeleted: { $ne: true },
+            toolId: targetToolId
+        }).select('_id').lean();
+
+        if (existingCollision) {
+            // Find highest serial currently in project to append cleanly at end
+            const highestSerialDoc = await Tool.findOne({
+                ...projFilter,
+                _id: { $ne: tool._id },
+                isDeleted: { $ne: true }
+            }).sort({ serialNumber: -1 }).select('serialNumber').lean();
+
+            let nextSerial = Math.max(1, (highestSerialDoc?.serialNumber || 0) + 1);
+            let generatedId = ToolIdGenerator.generateToolId(tool, nextSerial);
+
+            while (await Tool.findOne({ ...projFilter, _id: { $ne: tool._id }, isDeleted: { $ne: true }, toolId: generatedId }).select('_id').lean()) {
+                nextSerial++;
+                generatedId = ToolIdGenerator.generateToolId(tool, nextSerial);
+            }
+
+            targetSerial = nextSerial;
+            targetToolId = generatedId;
+        }
     }
 
+    tool.toolId = targetToolId;
+    tool.serialNumber = targetSerial;
+    tool.qrLink = ToolIdGenerator.generateQrLink(targetToolId);
     tool.isDeleted = false;
     tool.isScrapped = false;
     tool.isDisposed = false;
@@ -1464,11 +1516,6 @@ const restoreToolById = async (id, user = {}) => {
     tool.scrappedAt = null;
     tool.scrappedBy = null;
     await tool.save();
-
-    const projId = tool.project || tool.currentSite;
-    if (projId) {
-        await resequenceProjectToolSerials(projId);
-    }
 
     const updatedTool = await Tool.findById(tool._id).populate('project').populate('currentSite').lean();
 
@@ -1486,6 +1533,11 @@ const restoreToolById = async (id, user = {}) => {
         remarks: `Restored tool ${updatedTool.toolId}`
     });
     await auditLog.save();
+
+    if (updatedTool.currentSite || updatedTool.store) {
+        invalidateStoreStatusCache(updatedTool.currentSite || updatedTool.store);
+    }
+    invalidateStoreStatusCache();
 
     return updatedTool;
 };
@@ -1509,26 +1561,89 @@ const bulkRestoreTools = async ({ toolIds, user }) => {
         return { count: 0, message: 'No deleted or scrapped tools found to restore' };
     }
 
-    const affectedProjectIds = new Set();
-
+    // Group tools by project for fast bulk collision resolution
+    const projectHighestSerial = new Map();
+    const reservedToolIdsInBatch = new Set();
+    const affectedStoreIds = new Set();
     const restoreOps = [];
+    const targetToolIds = [];
+
     for (const tool of toolsToRestore) {
         const wasUnprinted = !tool.isPrinted;
-        let restoredToolId = tool.toolId;
+        const projId = tool.project || tool.currentSite;
+        const projIdStr = projId ? (projId._id ? projId._id.toString() : projId.toString()) : null;
 
-        // Use temporary toolId to guarantee no E11000 index collision during un-deletion
-        if (wasUnprinted && tool.toolId && !tool.toolId.startsWith('__RESTORE_TEMP_')) {
-            restoredToolId = `__RESTORE_TEMP_${tool._id}_${Date.now()}`;
-        } else if (tool.toolId && tool.toolId.startsWith('__TRASHED_')) {
-            restoredToolId = tool.toolId.replace(/^__TRASHED_[^_]+_/, '');
+        if (tool.currentSite) affectedStoreIds.add(tool.currentSite.toString());
+        else if (tool.store) affectedStoreIds.add(tool.store.toString());
+
+        let cleanToolId = (tool.toolId || '')
+            .replace(/^__TRASHED_[^_]+_/, '')
+            .replace(/^__RESTORE_TEMP_[^_]+_/, '');
+
+        let finalSerial = tool.originalSerialNumber || tool.serialNumber || 1;
+        let finalToolId = cleanToolId;
+
+        if (wasUnprinted && projIdStr) {
+            const isObjId = mongoose.Types.ObjectId.isValid(projIdStr);
+            const projFilter = {
+                $or: [
+                    { project: projIdStr },
+                    ...(isObjId ? [{ project: new mongoose.Types.ObjectId(projIdStr) }] : []),
+                    { currentSite: projIdStr },
+                    ...(isObjId ? [{ currentSite: new mongoose.Types.ObjectId(projIdStr) }] : [])
+                ]
+            };
+
+            // Check if cleanToolId is already in use by active tools in DB or by a prior tool in this batch
+            const isCollidingInDb = await Tool.findOne({
+                ...projFilter,
+                _id: { $nin: toolIds },
+                isDeleted: { $ne: true },
+                toolId: cleanToolId
+            }).select('_id').lean();
+
+            const isCollidingInBatch = reservedToolIdsInBatch.has(`${projIdStr}_${cleanToolId}`);
+
+            if (isCollidingInDb || isCollidingInBatch) {
+                // Determine next serial for this project
+                if (!projectHighestSerial.has(projIdStr)) {
+                    const highestDoc = await Tool.findOne({
+                        ...projFilter,
+                        _id: { $nin: toolIds },
+                        isDeleted: { $ne: true }
+                    }).sort({ serialNumber: -1 }).select('serialNumber').lean();
+                    projectHighestSerial.set(projIdStr, Math.max(1, (highestDoc?.serialNumber || 0)));
+                }
+
+                let nextSerial = projectHighestSerial.get(projIdStr) + 1;
+                let generatedId = ToolIdGenerator.generateToolId(tool, nextSerial);
+
+                while (
+                    reservedToolIdsInBatch.has(`${projIdStr}_${generatedId}`) ||
+                    await Tool.findOne({ ...projFilter, _id: { $nin: toolIds }, isDeleted: { $ne: true }, toolId: generatedId }).select('_id').lean()
+                ) {
+                    nextSerial++;
+                    generatedId = ToolIdGenerator.generateToolId(tool, nextSerial);
+                }
+
+                projectHighestSerial.set(projIdStr, nextSerial);
+                finalSerial = nextSerial;
+                finalToolId = generatedId;
+            }
+            reservedToolIdsInBatch.add(`${projIdStr}_${finalToolId}`);
         }
+
+        const finalQrLink = ToolIdGenerator.generateQrLink(finalToolId);
+        targetToolIds.push(finalToolId);
 
         restoreOps.push({
             updateOne: {
                 filter: { _id: tool._id },
                 update: {
                     $set: {
-                        toolId: restoredToolId,
+                        toolId: finalToolId,
+                        serialNumber: finalSerial,
+                        qrLink: finalQrLink,
                         isDeleted: false,
                         isScrapped: false,
                         status: 'Available',
@@ -1540,21 +1655,11 @@ const bulkRestoreTools = async ({ toolIds, user }) => {
                 }
             }
         });
-
-        if (tool.project) affectedProjectIds.add(tool.project.toString());
-        else if (tool.currentSite) affectedProjectIds.add(tool.currentSite.toString());
     }
 
     if (restoreOps.length > 0) {
         await Tool.bulkWrite(restoreOps, { ordered: false });
     }
-
-    for (const projId of affectedProjectIds) {
-        await resequenceProjectToolSerials(projId);
-    }
-
-    const restoredTools = await Tool.find({ _id: { $in: toolIds } }).select('toolId').lean();
-    const targetToolIds = restoredTools.map(t => t.toolId || t._id.toString());
 
     const auditLog = new ToolAuditLog({
         user: {
@@ -1565,26 +1670,46 @@ const bulkRestoreTools = async ({ toolIds, user }) => {
         dateTime: new Date(),
         action: 'Bulk Restore Tools',
         affectedToolsCount: toolsToRestore.length,
-        toolIds: targetToolIds,
+        toolIds: targetToolIds.slice(0, 500),
         remarks: `Bulk restored ${toolsToRestore.length} tools`
     });
     await auditLog.save();
+
+    for (const sId of affectedStoreIds) {
+        invalidateStoreStatusCache(sId);
+    }
+    invalidateStoreStatusCache();
 
     return { count: toolsToRestore.length, auditLogId: auditLog._id };
 };
 
 const permanentDeleteToolById = async (id, user = {}) => {
-    const tool = await Tool.findById(id);
+    const tool = await Tool.findById(id).select('_id toolId project currentSite store isDeleted isPrinted').lean();
     if (!tool) throw new Error('Tool not found');
 
     const projectId = tool.project || tool.currentSite;
     const toolIdStr = tool.toolId || tool._id.toString();
     const storeId = tool.currentSite || tool.store;
+    // Resequence ONLY if an active unprinted tool was deleted directly (not already soft-deleted in Trash)
+    const wasActiveUnprinted = !tool.isDeleted && !tool.isPrinted;
 
     await Tool.findByIdAndDelete(id);
 
-    if (projectId) {
-        await resequenceProjectToolSerials(projectId);
+    // Concurrently clean up any residual references (e.g. missing records or movement logs)
+    await Promise.all([
+        MissingTool.deleteMany({ tool: id }),
+        ToolMovement.deleteMany({ tool: id })
+    ]);
+
+    // If an active tool was directly purged without being trashed first, resequence in background so HTTP response is instant
+    if (projectId && wasActiveUnprinted) {
+        setImmediate(async () => {
+            try {
+                await resequenceProjectToolSerials(projectId);
+            } catch (err) {
+                console.error('Background resequence error after permanentDeleteToolById:', err);
+            }
+        });
     }
 
     const auditLog = new ToolAuditLog({
@@ -1602,6 +1727,11 @@ const permanentDeleteToolById = async (id, user = {}) => {
     });
     await auditLog.save();
 
+    if (storeId) {
+        invalidateStoreStatusCache(storeId);
+    }
+    invalidateStoreStatusCache();
+
     return { success: true, message: 'Tool permanently deleted' };
 };
 
@@ -1610,24 +1740,49 @@ const bulkPermanentDeleteTools = async ({ toolIds, user }) => {
         throw new Error('Specific tool IDs must be selected for bulk permanent delete');
     }
 
-    const toolsToDelete = await Tool.find({ _id: { $in: toolIds } });
+    const toolsToDelete = await Tool.find({ _id: { $in: toolIds } })
+        .select('_id toolId project currentSite store isDeleted isPrinted')
+        .lean();
+
     if (!toolsToDelete || toolsToDelete.length === 0) {
         return { count: 0, message: 'No matching tools found for permanent deletion' };
     }
 
-    const affectedProjectIds = new Set();
+    const activeAffectedProjectIds = new Set();
+    const affectedStoreIds = new Set();
     const targetToolIds = [];
 
     for (const tool of toolsToDelete) {
         targetToolIds.push(tool.toolId || tool._id.toString());
-        if (tool.project) affectedProjectIds.add(tool.project.toString());
-        else if (tool.currentSite) affectedProjectIds.add(tool.currentSite.toString());
+        if (tool.currentSite) affectedStoreIds.add(tool.currentSite.toString());
+        else if (tool.store) affectedStoreIds.add(tool.store.toString());
+
+        // Resequence ONLY if an active unprinted tool was purged directly (not already in Trash)
+        if (!tool.isDeleted && !tool.isPrinted) {
+            if (tool.project) activeAffectedProjectIds.add(tool.project.toString());
+            else if (tool.currentSite) activeAffectedProjectIds.add(tool.currentSite.toString());
+        }
     }
 
     await Tool.deleteMany({ _id: { $in: toolIds } });
 
-    for (const projId of affectedProjectIds) {
-        await resequenceProjectToolSerials(projId);
+    // Clean up any residual dangling references concurrently
+    await Promise.all([
+        MissingTool.deleteMany({ tool: { $in: toolIds } }),
+        ToolMovement.deleteMany({ tool: { $in: toolIds } })
+    ]);
+
+    // Resequence active tools in background only if non-trashed tools were deleted
+    if (activeAffectedProjectIds.size > 0) {
+        setImmediate(async () => {
+            for (const projId of activeAffectedProjectIds) {
+                try {
+                    await resequenceProjectToolSerials(projId);
+                } catch (err) {
+                    console.error('Background resequence error after bulkPermanentDeleteTools:', err);
+                }
+            }
+        });
     }
 
     const auditLog = new ToolAuditLog({
@@ -1639,10 +1794,15 @@ const bulkPermanentDeleteTools = async ({ toolIds, user }) => {
         dateTime: new Date(),
         action: 'Bulk Permanent Delete Tools',
         affectedToolsCount: toolsToDelete.length,
-        toolIds: targetToolIds,
+        toolIds: targetToolIds.slice(0, 500),
         remarks: `Permanently deleted ${toolsToDelete.length} tools`
     });
     await auditLog.save();
+
+    for (const sId of affectedStoreIds) {
+        invalidateStoreStatusCache(sId);
+    }
+    invalidateStoreStatusCache();
 
     return { count: toolsToDelete.length, auditLogId: auditLog._id };
 };
