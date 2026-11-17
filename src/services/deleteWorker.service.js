@@ -1,6 +1,6 @@
 import { Tool } from '../models/tool.model.js';
 import ToolAuditLog from '../models/toolAuditLog.model.js';
-import { resequenceProjectToolSerials, invalidateStoreStatusCache } from './tool.service.js';
+import { invalidateStoreStatusCache } from './tool.service.js';
 
 /**
  * [SHARED] & [WEB] Bulk / Async Tool Delete Background Worker Service
@@ -112,7 +112,7 @@ export const startDeleteJob = async ({ toolIds, storeId, user }) => {
                 isScrapped: { $ne: true }
             };
 
-            if (storeId) {
+            if (storeId && storeId !== 'all') {
                 query.$or = [
                     { currentSite: storeId },
                     { store: storeId }
@@ -191,7 +191,7 @@ export const startDeleteJob = async ({ toolIds, storeId, user }) => {
                 const chunk = deleteOps.slice(i, i + BATCH_SIZE);
                 await Tool.bulkWrite(chunk, { ordered: false });
                 job.deletedCount = Math.min(i + chunk.length, totalToDelete);
-                job.percentage = 10 + Math.round((job.deletedCount / totalToDelete) * 15); // 10% - 25%
+                job.percentage = Math.min(90, 20 + Math.round((job.deletedCount / totalToDelete) * 70));
                 job.message = `Moved ${job.deletedCount} of ${totalToDelete} tool(s) to Trash...`;
                 emitDeleteProgress(jobId, job);
             }
@@ -203,38 +203,22 @@ export const startDeleteJob = async ({ toolIds, storeId, user }) => {
                 action: 'Bulk Delete Unprinted Tools',
                 store: storeId || undefined,
                 affectedToolsCount: toolsToDelete.length,
-                toolIds: targetToolIds,
+                toolIds: targetToolIds.slice(0, 500),
                 remarks: `Bulk soft-deleted ${toolsToDelete.length} unprinted tools to Trash`
             });
             await auditLog.save();
 
-            // Re-sequence remaining active tools
-            job.stage = 'resequencing';
-            job.message = 'Calculating sequence for remaining active tools...';
-            job.percentage = 25;
-            emitDeleteProgress(jobId, job);
-
-            for (const projId of affectedProjectIds) {
-                await resequenceProjectToolSerials(projId, ({ stage, message, percentage, processedCount, totalCount }) => {
-                    const scaledPercent = 25 + Math.round((percentage || 0) * 0.70); // 25% - 95%
-                    job.percentage = Math.min(scaledPercent, 95);
-                    job.stage = stage || 'resequencing';
-                    job.message = message || 'Re-sequencing active tool IDs in batches...';
-                    job.resequencedCount = processedCount || 0;
-                    job.totalToResequence = totalCount || 0;
-                    emitDeleteProgress(jobId, job);
-                });
-            }
-
             if (storeId) {
-                invalidateStoreStatusCache(storeId);
+                invalidateStoreStatusCache(storeId === 'all' ? undefined : storeId);
             }
+            invalidateStoreStatusCache();
 
-            // Complete
+            // Complete instantly without 35-second resequencing loop
             job.status = 'completed';
             job.percentage = 100;
             job.stage = 'completed';
-            job.message = `Successfully deleted ${totalToDelete} tool(s). All remaining active tools have been automatically re-sequenced.`;
+            job.deletedCount = totalToDelete;
+            job.message = `Successfully moved ${totalToDelete} tool(s) to Trash.`;
             job.completedAt = new Date();
             emitDeleteProgress(jobId, job);
 

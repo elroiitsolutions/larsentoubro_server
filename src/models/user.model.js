@@ -2,6 +2,22 @@ import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 
+const documentSchema = new mongoose.Schema({
+    title: { type: String, required: true },
+    documentType: {
+        type: String,
+        default: 'Other'
+    },
+    fileName: { type: String, required: true },
+    originalName: { type: String, required: true },
+    fileUrl: { type: String, required: true },
+    filePath: { type: String },
+    fileType: { type: String },
+    fileSize: { type: Number, default: 0 },
+    uploadedAt: { type: Date, default: Date.now },
+    uploadedBy: { type: String, default: 'System' }
+});
+
 const userSchema = new mongoose.Schema({
     name: {
         type: String,
@@ -72,7 +88,8 @@ const userSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Store',
         default: []
-    }]
+    }],
+    documents: [documentSchema]
 }, { timestamps: true, strict: false });
 
 // Pre-save hook to hash password

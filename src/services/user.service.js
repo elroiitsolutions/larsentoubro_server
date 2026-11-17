@@ -6,7 +6,7 @@ import { User } from '../models/user.model.js';
  * Consumed by both Web Application (auth.service.ts, user.service.ts) and Mobile App (authService.ts, userService.ts).
  */
 
-const enforcePagePermissions = (data, existingRole = 'User') => {
+const enforcePagePermissions = (data, existingRole = 'User', existingAllowedPages = []) => {
     const role = data.role || existingRole;
     if (role === 'Admin') {
         data.allowedPages = ['/dashboard', '/projects', '/stores', '/tools', '/users', '/settings'];
@@ -17,14 +17,18 @@ const enforcePagePermissions = (data, existingRole = 'User') => {
         data.allowedPages = ['/stores', '/tools'];
         return;
     }
+    // If allowedPages not provided in update payload, preserve existing allowedPages
+    if (data.allowedPages === undefined && existingAllowedPages && existingAllowedPages.length > 0) {
+        data.allowedPages = [...existingAllowedPages];
+    }
     if (data.projects && Array.isArray(data.projects) && data.projects.length > 0) {
-        if (!data.allowedPages) data.allowedPages = [];
+        if (!data.allowedPages) data.allowedPages = [...(existingAllowedPages || [])];
         if (!data.allowedPages.includes('/projects')) {
             data.allowedPages.push('/projects');
         }
     }
     if (data.stores && Array.isArray(data.stores) && data.stores.length > 0) {
-        if (!data.allowedPages) data.allowedPages = [];
+        if (!data.allowedPages) data.allowedPages = [...(existingAllowedPages || [])];
         if (!data.allowedPages.includes('/stores')) {
             data.allowedPages.push('/stores');
         }
@@ -199,9 +203,11 @@ const updateUser = async (id, updateData, actor = null) => {
                 data.hasInspectionAccess = Boolean(data.hasInspectionAccess && parent.hasInspectionAccess);
             }
         }
+    } else if (actor && actor.role !== 'Admin') {
+        throw new Error('Access denied. Only Admins can modify internal users.');
     }
 
-    enforcePagePermissions(data, user.role);
+    enforcePagePermissions(data, user.role, user.allowedPages);
     Object.assign(user, data);
     await user.save();
 
@@ -268,6 +274,53 @@ const deleteUser = async (id, actor = null) => {
     return await User.findByIdAndDelete(id);
 };
 
+const addDocument = async (userId, docData, actor = null) => {
+    const user = await User.findById(userId);
+    if (!user) {
+        throw new Error('User not found');
+    }
+    // Authorization check
+    if (actor && actor.role !== 'Admin') {
+        const isSelf = String(user._id) === String(actor._id);
+        const isParent = user.parentUser && String(user.parentUser) === String(actor._id);
+        if (!isSelf && !isParent) {
+            throw new Error('Access denied. You can only manage documents for your own account or subusers.');
+        }
+    }
+    if (!user.documents) {
+        user.documents = [];
+    }
+    user.documents.push(docData);
+    await user.save();
+    return await User.findById(user._id)
+        .populate('projects', 'name code location')
+        .populate('stores', 'name code siteName')
+        .populate('parentUser', 'name email user_id')
+        .select('-__v -password');
+};
+
+const deleteDocument = async (userId, docId, actor = null) => {
+    const user = await User.findById(userId);
+    if (!user) {
+        throw new Error('User not found');
+    }
+    // Authorization check
+    if (actor && actor.role !== 'Admin') {
+        const isSelf = String(user._id) === String(actor._id);
+        const isParent = user.parentUser && String(user.parentUser) === String(actor._id);
+        if (!isSelf && !isParent) {
+            throw new Error('Access denied. You can only manage documents for your own account or subusers.');
+        }
+    }
+    user.documents = (user.documents || []).filter(d => String(d._id) !== String(docId));
+    await user.save();
+    return await User.findById(user._id)
+        .populate('projects', 'name code location')
+        .populate('stores', 'name code siteName')
+        .populate('parentUser', 'name email user_id')
+        .select('-__v -password');
+};
+
 export const userService = {
     createUser,
     createSubuser,
@@ -276,6 +329,8 @@ export const userService = {
     getUserById,
     getUserByEmail,
     updateUser,
-    deleteUser
+    deleteUser,
+    addDocument,
+    deleteDocument
 };
 

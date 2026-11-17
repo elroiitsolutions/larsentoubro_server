@@ -1,10 +1,17 @@
 import { Router } from 'express';
-import { userController } from '../controllers/user.controller.js';
+import { userController, userDocUpload } from '../controllers/user.controller.js';
 import { validate } from '../middleware/validate.middleware.js';
 import { userValidator } from '../validators/user.validator.js';
 import { authenticate, requireAdmin, requireCreateUserPermission } from '../middleware/auth.middleware.js';
 
 const router = Router();
+
+/**
+ * [WEB] GET /api/users/documents/file/:filename
+ * Serves uploaded user/subuser document files (PDF/images).
+ * Exclusively consumed by Web Application user/subuser manager.
+ */
+router.get('/documents/file/:filename', userController.downloadDocumentFile);
 
 // ==========================================
 // [SHARED] & [WEB] Authentication & Session Routes
@@ -119,6 +126,18 @@ router.put('/subusers/:id', authenticate, requireCreateUserPermission, userContr
  */
 router.delete('/subusers/:id', authenticate, requireCreateUserPermission, userController.deleteSubuser);
 
+/**
+ * [WEB] POST /api/users/:id/documents - Upload document attachments to subuser/user
+ * Exclusively used by Web subuser manager UI.
+ */
+router.post('/:id/documents', authenticate, userDocUpload.single('file'), userController.uploadDocument);
+
+/**
+ * [WEB] DELETE /api/users/:id/documents/:docId - Remove document attachment from subuser/user
+ * Exclusively used by Web subuser manager UI.
+ */
+router.delete('/:id/documents/:docId', authenticate, userController.deleteDocument);
+
 // ==========================================
 // [SHARED] System User Management Endpoints
 // Consumed by both Web and Mobile user administration
@@ -152,7 +171,12 @@ router.get('/:id', authenticate, (req, res, next) => {
 /**
  * [SHARED] PUT /api/users/:id - Update user details, role, or store assignments (Admin only)
  */
-router.put('/:id', authenticate, requireAdmin, validate(userValidator.updateUser), userController.updateUser);
+router.put('/:id', authenticate, (req, res, next) => {
+    if (req.user.role === 'Admin' || req.user.canCreateUser) {
+        return next();
+    }
+    return res.status(403).json({ success: false, message: 'Access denied: Admin or User Management privileges required.' });
+}, validate(userValidator.updateUser), userController.updateUser);
 
 /**
  * [SHARED] DELETE /api/users/:id - Delete system user (Admin only)

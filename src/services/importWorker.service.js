@@ -1,6 +1,7 @@
 import { Tool } from '../models/tool.model.js';
 import { ImportJob } from '../models/importJob.model.js';
 import ToolIdGenerator from '../utils/tool-id.js';
+import { computeToolExpiryDate } from './tool.service.js';
 
 /**
  * [SHARED] & [WEB] Bulk Import Background Worker Service
@@ -133,6 +134,10 @@ export const processImportJob = async (jobId, targetStore) => {
                     } else {
                         toolData.validityPeriod = '3 Years';
                     }
+                }
+
+                if (!toolData.nextInspectionDueDate) {
+                    toolData.nextInspectionDueDate = computeToolExpiryDate(toolData);
                 }
 
                 const currentSerial = startSerial + globalIdx;
