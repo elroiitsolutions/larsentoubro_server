@@ -25,15 +25,6 @@ app.get('/ping', (req, res) => {
     res.status(200).json({ message: 'pong' });
 });
 
-app.get('/test-db', async (req, res) => {
-    try {
-        const stores = await mongoose.connection.db.collection('stores').find().toArray();
-        res.json(stores);
-    } catch (e) {
-        res.status(500).json({ error: e.toString() });
-    }
-});
-
 // API Routes
 app.use('/api', routes);
 

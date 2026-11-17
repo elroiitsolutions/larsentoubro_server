@@ -452,7 +452,8 @@ export const getExpiringGuestNotifications = async (actor) => {
 
     const filter = {
         status: 'Active',
-        expiresAt: { $lte: in48Hours }
+        expiresAt: { $lte: in48Hours },
+        notificationStatus: { $ne: 'Confirmed' }
     };
 
     if (actor && actor.role !== 'Admin') {
@@ -469,7 +470,8 @@ export const getExpiringGuestNotifications = async (actor) => {
             ...u,
             hoursRemaining: Math.max(0, diffHours),
             daysRemaining: Math.max(0, diffDays),
-            isExpired: diffMs <= 0
+            isExpired: diffMs <= 0,
+            isDay14: diffDays <= 2 && diffDays >= 0
         };
     });
 };
